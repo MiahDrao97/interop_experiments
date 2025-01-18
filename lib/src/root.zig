@@ -6,33 +6,50 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
+const FeedReader = @import("FeedReader.zig");
+const Scan = FeedReader.Scan;
+const ReadResult = FeedReader.ScanResult;
 
 threadlocal var reader: ?*FeedReader = null;
 var gpa: GeneralPurposeAllocator(.{}) = .init;
 
-export fn open(fileName: [*:0]const u8) i32 {
+/// Open a file from the USPS feeder, returning a status code for the operation
+export fn open(fileName: [*:0]const u8) NewReaderResult {
     if (reader) |_| {
         // reader is already active on another file
         log.err("This thread already has an open reader. Close the current reader before opening a new one.", .{});
-        return @intFromEnum(NewReaderResult.conflict);
+        return .conflict;
     }
 
     const file: File = std.fs.cwd().openFileZ(fileName, .{ .mode = .read_only }) catch |err| {
         log.err("Failed to open file '{s}': {s} -> {?}", .{ fileName, @errorName(err), @errorReturnTrace() });
-        return @intFromEnum(NewReaderResult.failedToOpen);
+        return .failedToOpen;
     };
 
     reader = FeedReader.new(gpa.allocator(), file) catch |err| {
         switch (err) {
             Allocator.Error.OutOfMemory => {
                 log.err("FATAL: Out of memory. Last attempted allocation: {?}", .{@errorReturnTrace()});
-                return @intFromEnum(NewReaderResult.outOfMemory);
+                return .outOfMemory;
             },
             else => unreachable,
         }
     };
 
-    return @intFromEnum(NewReaderResult.opened);
+    return .opened;
+}
+
+export fn nextScan() ReadScanResult {
+    if (reader) |current_reader| {
+        const read_result: ReadResult = current_reader.nextScan() catch {
+            return .{ .status = .failedToRead };
+        };
+        switch (read_result) {
+            .scan => |s| return .{ .scan = s },
+            .eof => return .{ .status = .eof },
+        }
+    }
+    return .{ .status = .noActiveReader };
 }
 
 export fn close() void {
@@ -42,37 +59,21 @@ export fn close() void {
     }
 }
 
-const FeedReader = struct {
-    parent_allocator: Allocator,
-    arena: *ArenaAllocator,
-    file: File,
-    inner_reader: AnyReader,
-
-    pub fn new(allocator: Allocator, file: File) Allocator.Error!*FeedReader {
-        const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
-        errdefer allocator.destroy(arena_ptr);
-        arena_ptr.* = .init(allocator);
-
-        const reader_ptr: *FeedReader = try arena_ptr.allocator().create(FeedReader);
-        reader_ptr.* = .{
-            .parent_allocator = allocator,
-            .arena = arena_ptr,
-            .file = file,
-            .inner_reader = file.reader().any(),
-        };
-
-        return reader_ptr;
-    }
-
-    pub fn deinit(self: FeedReader) void {
-        self.file.close();
-        self.arena.deinit();
-    }
-};
-
-const NewReaderResult = enum(i32) {
+pub const NewReaderResult = enum(i32) {
     opened = 0,
     failedToOpen = 1,
     conflict = 2,
     outOfMemory = 3,
+};
+
+pub const ReadScanStatus = enum(i32) {
+    success = 0,
+    noActiveReader = 1,
+    failedToRead = 2,
+    eof = 10,
+};
+
+pub const ReadScanResult = extern struct {
+    status: ReadScanStatus = .success,
+    scan: ?*Scan = null,
 };
