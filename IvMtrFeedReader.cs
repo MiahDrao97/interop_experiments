@@ -7,7 +7,7 @@ public sealed class IvMtrFeedReader : IDisposable
 {
     private IvMtrFeedReader() { }
 
-    public static IvMtrFeedReader OpenFile(string filePath)
+    public static IvMtrFeedReader OpenFile(string filePath, bool terminateOpenReader = false)
     {
         LibBindings.NewReaderResult result = LibBindings.OpenReader(filePath);
         switch (result)
@@ -15,6 +15,11 @@ public sealed class IvMtrFeedReader : IDisposable
             case LibBindings.NewReaderResult.Opened:
                 break;
             case LibBindings.NewReaderResult.Conflict:
+                if (terminateOpenReader)
+                {
+                    LibBindings.CloseReader();
+                    return OpenFile(filePath, false);
+                }
                 throw new InvalidOperationException($"Thread {Thread.GetCurrentProcessorId()} already has a feeder reader opened. Cannot open another file until the current reader is closed.");
             case LibBindings.NewReaderResult.OutOfMemory:
 #pragma warning disable CA2201
@@ -41,8 +46,9 @@ internal static partial class LibBindings
     public enum NewReaderResult
     {
         Opened = 0,
-        Conflict = 1,
-        OutOfMemory = 2
+        FailedToOpen = 1,
+        Conflict = 2,
+        OutOfMemory = 3
     }
 
     public static NewReaderResult OpenReader(string fileName)

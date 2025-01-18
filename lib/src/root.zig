@@ -17,8 +17,8 @@ export fn open(fileName: [*:0]const u8) i32 {
         return @intFromEnum(NewReaderResult.conflict);
     }
 
-    const file: File = std.fs.cwd().openFileZ(fileName, .{}) catch |err| {
-        log.err("Failed to open file: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+    const file: File = std.fs.cwd().openFileZ(fileName, .{ .mode = .read_only }) catch |err| {
+        log.err("Failed to open file '{s}': {s} -> {?}", .{ fileName, @errorName(err), @errorReturnTrace() });
         return @intFromEnum(NewReaderResult.failedToOpen);
     };
 
