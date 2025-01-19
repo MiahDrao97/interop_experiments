@@ -114,15 +114,21 @@ internal static partial class LibBindings
         public IntPtr scan;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
     private struct ScanUnmanaged
     {
-        public unsafe byte* imb;
+        public IntPtr imb;
 
         public UIntPtr imb_len;
 
-        public unsafe byte* mailPhase;
+        public IntPtr mailPhase;
 
         public UIntPtr mailPhase_len;
+
+        public override readonly string ToString()
+        {
+            return $"{{imb:{imb}, imb_len:{imb_len}, mailPhase:{mailPhase}, mailPhase_len:{mailPhase_len}}}";
+        }
     }
 #pragma warning restore CS0649
 
@@ -170,28 +176,26 @@ internal static partial class LibBindings
         }
 
         ScanUnmanaged scan = Marshal.PtrToStructure<ScanUnmanaged>(result.scan);
-        unsafe
+        Console.WriteLine($"Returned scan: {scan}");
+        if (scan.mailPhase == IntPtr.Zero)
         {
-            if (scan.mailPhase == null)
-            {
-                throw new InvalidOperationException("Scan returned from reader has null mailPhase");
-            }
-            if (scan.imb == null)
-            {
-                throw new InvalidOperationException("Scan returned null for IMB");
-            }
-            string mailPhaseStr = Encoding.ASCII.GetString(scan.mailPhase, (int)scan.mailPhase_len);
-            if (!MailPhase.Steps.TryGetValue(mailPhaseStr, out float mailPhase))
-            {
-                throw new InvalidOperationException($"Mail phase '{mailPhaseStr}' not recognized");
-            }
-
-            return new ScanResult
-            {
-                Imb = Encoding.ASCII.GetString(scan.imb, (int)scan.imb_len),
-                MailPhase = mailPhase,
-            };
+            throw new InvalidOperationException("Scan returned from reader has null mailPhase");
         }
+        if (scan.imb == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Scan returned null for IMB");
+        }
+        string mailPhaseStr = Marshal.PtrToStringAnsi(scan.mailPhase) ?? throw new InvalidOperationException($"Mail phase was not valid");
+        if (!MailPhase.Steps.TryGetValue(mailPhaseStr, out float mailPhase))
+        {
+            throw new InvalidOperationException($"Mail phase '{mailPhaseStr}' not recognized");
+        }
+
+        return new ScanResult
+        {
+            Imb = Marshal.PtrToStringAnsi(scan.imb) ?? throw new InvalidOperationException($"IMB was not valid"),
+            MailPhase = mailPhase,
+        };
     }
 }
 

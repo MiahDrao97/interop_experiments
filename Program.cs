@@ -18,17 +18,20 @@ internal static class Program
         using IvMtrFeedReader reader = IvMtrFeedReader.OpenFile(args[0]);
 
         int idx = 0;
-        foreach (ScanResult scan in reader)
+        if (count > 0)
         {
-            if (count.HasValue)
+            foreach (ScanResult scan in reader)
             {
-                if (idx >= count)
+                Console.WriteLine($"Read scan[{idx}]. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                idx++;
+                if (count.HasValue)
                 {
-                    break;
+                    if (idx >= count)
+                    {
+                        break;
+                    }
                 }
             }
-            Console.WriteLine($"Read scan[{idx}]. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
-            idx++;
         }
     }
 }

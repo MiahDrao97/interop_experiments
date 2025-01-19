@@ -223,8 +223,8 @@ const Scan = struct {
 
 pub const ScanUnmanaged = extern struct {
     imb: [*:0]u8,
-    mailPhase: [*:0]u8,
     imb_len: usize,
+    mailPhase: [*:0]u8,
     mailPhase_len: usize,
 
     pub fn new(allocator: Allocator, scan: Scan) Allocator.Error!*ScanUnmanaged {
