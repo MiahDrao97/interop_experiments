@@ -41,8 +41,11 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
 
 export fn nextScan() ReadScanResult {
     if (reader) |current_reader| {
-        const read_result: ReadResult = current_reader.nextScan() catch {
-            return .{ .status = .failedToRead };
+        const read_result: ReadResult = current_reader.nextScan() catch |err| {
+            switch (err) {
+                error.OutOfMemory => return .{ .status = .outOfMemory },
+                error.InvalidFileFormat => return .{ .status = .failedToRead },
+            }
         };
         switch (read_result) {
             .scan => |s| return .{ .scan = s },
@@ -70,7 +73,8 @@ pub const ReadScanStatus = enum(i32) {
     success = 0,
     noActiveReader = 1,
     failedToRead = 2,
-    eof = 10,
+    outOfMemory = 3,
+    eof = -1,
 };
 
 pub const ReadScanResult = extern struct {

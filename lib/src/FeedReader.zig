@@ -46,7 +46,8 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
     if (self.open_square_bracket) {
         // parse JSON object: from '{' until '}'
         var buf: [4096]u8 = undefined;
-        const slice: []const u8 = self.parseNextObject(&buf) catch {
+        const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
+            log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
             return error.InvalidFileFormat;
         } orelse return .eof;
 
@@ -54,14 +55,19 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         ) catch |err| {
-            log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
-                @errorName(err),
-                @errorReturnTrace(),
-                slice,
-            });
-            return error.InvalidFileFormat;
+            switch (err) {
+                error.Overflow => return error.OutOfMemory,
+                else => {
+                    log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
+                        @errorName(err),
+                        @errorReturnTrace(),
+                        slice,
+                    });
+                    return error.InvalidFileFormat;
+                },
+            }
         };
         const scan: *Scan = try self.arena.allocator().create(Scan);
         scan.* = parsed.value;
@@ -155,6 +161,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
                 break;
             }
         } else {
+            log.err("Unexpected token '{c}': line {d}, pos {d}", .{ byte, self.telemetry.line, self.telemetry.pos });
             return error.InvalidFormat;
         }
     } else |err| {
