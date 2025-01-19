@@ -107,6 +107,7 @@ internal static partial class LibBindings
     }
 
 #pragma warning disable CS0649
+    [StructLayout(LayoutKind.Sequential)]
     private struct ScanResultUnmanaged
     {
         public int status;
