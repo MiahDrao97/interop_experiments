@@ -3,15 +3,14 @@ const testing = std.testing;
 const log = std.log;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
 const FeedReader = @import("FeedReader.zig");
-const Scan = FeedReader.Scan;
+const ScanUnmanaged = FeedReader.ScanUnmanaged;
 const ReadResult = FeedReader.ScanResult;
 
-threadlocal var reader: ?*FeedReader = null;
-var gpa: GeneralPurposeAllocator(.{}) = .init;
+threadlocal var reader: ?FeedReader = null;
+var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
 
 /// Open a file from the USPS feeder, returning a status code for the operation
 export fn open(fileName: [*:0]const u8) NewReaderResult {
@@ -21,7 +20,10 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
         return .conflict;
     }
 
-    const file: File = std.fs.cwd().openFileZ(fileName, .{ .mode = .read_only }) catch |err| {
+    const file: File = std.fs.cwd().openFileZ(
+        fileName,
+        File.OpenFlags{ .mode = .read_only, .allow_ctty = true, .lock = .exclusive },
+    ) catch |err| {
         log.err("Failed to open file '{s}': {s} -> {?}", .{ fileName, @errorName(err), @errorReturnTrace() });
         return .failedToOpen;
     };
@@ -40,7 +42,7 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
 }
 
 export fn nextScan() ReadScanResult {
-    if (reader) |current_reader| {
+    if (reader) |*current_reader| {
         const read_result: ReadResult = current_reader.nextScan() catch |err| {
             switch (err) {
                 error.OutOfMemory => return .{ .status = .outOfMemory },
@@ -48,7 +50,10 @@ export fn nextScan() ReadScanResult {
             }
         };
         switch (read_result) {
-            .scan => |s| return .{ .scan = s },
+            .scan => |s| {
+                log.debug("\nScan: {any}", .{s});
+                return .{ .scan = s };
+            },
             .eof => return .{ .status = .eof },
         }
     }
@@ -79,5 +84,29 @@ pub const ReadScanStatus = enum(i32) {
 
 pub const ReadScanResult = extern struct {
     status: ReadScanStatus = .success,
-    scan: ?*Scan = null,
+    scan: ?*ScanUnmanaged = null,
 };
+
+test "success case" {
+    const result: NewReaderResult = open("test_feed.json");
+    try testing.expectEqual(.opened, result);
+    defer close();
+
+    try testing.expect(reader != null);
+
+    var scanResult: ReadScanResult = nextScan();
+    try testing.expectEqual(.success, scanResult.status);
+    try testing.expect(scanResult.scan != null);
+    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.scan.?.imb[0..scanResult.scan.?.imb_len]);
+    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.scan.?.mailPhase[0..scanResult.scan.?.mailPhase_len]);
+
+    scanResult = nextScan();
+    try testing.expectEqual(.success, scanResult.status);
+    try testing.expect(scanResult.scan != null);
+    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.scan.?.imb[0..scanResult.scan.?.imb_len]);
+    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.scan.?.mailPhase[0..scanResult.scan.?.mailPhase_len]);
+
+    scanResult = nextScan();
+    try testing.expectEqual(.eof, scanResult.status);
+    try testing.expectEqual(null, scanResult.scan);
+}

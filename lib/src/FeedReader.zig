@@ -11,34 +11,35 @@ const log = std.log;
 
 parent_allocator: Allocator,
 arena: *ArenaAllocator,
-file: File,
-inner_reader: AnyReader,
 open_square_bracket: bool = false,
 telemetry: Telemetry = .{},
-prev_scan: ?struct { ptr: *Scan, parsed: Parsed(Scan) } = null,
+prev_scan: ?struct { unmanaged: *ScanUnmanaged, parsed: Parsed(Scan) } = null,
+// this belongs to the OS
+file_handle_ptr: usize,
 
 const FeedReader = @This();
 
-pub fn new(allocator: Allocator, file: File) Allocator.Error!*FeedReader {
+pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
     errdefer allocator.destroy(arena_ptr);
     arena_ptr.* = .init(allocator);
 
-    const reader_ptr: *FeedReader = try arena_ptr.allocator().create(FeedReader);
-    reader_ptr.* = .{
+    return .{
         .parent_allocator = allocator,
         .arena = arena_ptr,
-        .file = file,
-        .inner_reader = file.reader().any(),
+        .file_handle_ptr = @intFromPtr(file.handle),
     };
+}
 
-    return reader_ptr;
+fn getFile(self: FeedReader) File {
+    const handle: *anyopaque = @ptrFromInt(self.file_handle_ptr);
+    return .{ .handle = handle };
 }
 
 pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanResult {
     // check for a previous scan and free that memory
     if (self.prev_scan) |prev| {
-        self.arena.allocator().destroy(prev.ptr);
+        prev.unmanaged.deinit(self.arena.allocator());
         prev.parsed.deinit();
     }
 
@@ -51,11 +52,13 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
             return error.InvalidFileFormat;
         } orelse return .eof;
 
+        log.debug("\nParsed object: '{s}'", .{slice});
+
         const parsed: Parsed(Scan) = json.parseFromSlice(
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| {
             switch (err) {
                 error.Overflow => return error.OutOfMemory,
@@ -69,11 +72,9 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
                 },
             }
         };
-        const scan: *Scan = try self.arena.allocator().create(Scan);
-        scan.* = parsed.value;
         // assign to previous
-        self.prev_scan = .{ .ptr = scan, .parsed = parsed };
-        return .{ .scan = scan };
+        self.prev_scan = .{ .unmanaged = try .new(self.arena.allocator(), parsed.value), .parsed = parsed };
+        return .{ .scan = self.prev_scan.?.unmanaged };
     } else {
         // read the square bracket first
         self.openArray() catch |err| {
@@ -92,7 +93,8 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
 }
 
 fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    while (self.inner_reader.readByte()) |byte| {
+    var reader: AnyReader = self.getFile().reader().any();
+    while (reader.readByte()) |byte| {
         var new_line: bool = false;
         defer {
             if (!new_line) {
@@ -118,15 +120,24 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         });
         return error.InvalidFileFormat;
     } else |err| {
-        return @as(error{ EndOfStream, InvalidFileFormat }, @errorCast(err));
+        log.err("Encountered error opening array (line: {d}, pos: {d}): {s} -> {?}", .{
+            self.telemetry.line,
+            self.telemetry.pos,
+            @errorName(err),
+            @errorReturnTrace(),
+        });
+        return error.InvalidFileFormat;
     }
 }
 
 fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated }!?[]const u8 {
     var open_brace: bool = false;
     var close_brace: bool = false;
+    var inside_quotes: bool = false;
     var i: usize = 0;
-    while (self.inner_reader.readByte()) |byte| {
+    var reader: AnyReader = self.getFile().reader().any();
+    while (reader.readByte()) |byte| {
+        // don't allow overflow
         if (i >= buf.len) break;
 
         var new_line: bool = false;
@@ -143,8 +154,13 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
             new_line = true;
         }
 
+        if (byte == '"') {
+            inside_quotes = !inside_quotes;
+        }
+
         if (byte == ',' and i == 0) continue;
-        if (std.ascii.isWhitespace(byte)) continue;
+        if (!inside_quotes and std.ascii.isWhitespace(byte)) continue;
+
         if (byte == ']' and i == 0) {
             // we're all done here
             return null;
@@ -168,7 +184,10 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
         // probably just the end
         switch (err) {
             error.EndOfStream => return null,
-            else => unreachable,
+            else => {
+                log.err("Unepxected error: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+                unreachable;
+            },
         }
     }
 
@@ -178,11 +197,11 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     return buf[0..i];
 }
 
-pub fn deinit(self: *FeedReader) void {
+pub fn deinit(self: FeedReader) void {
     const parent_allocator: Allocator = self.parent_allocator;
     const arena_ptr: *ArenaAllocator = self.arena;
 
-    self.file.close();
+    self.getFile().close();
     self.arena.deinit();
     parent_allocator.destroy(arena_ptr);
 }
@@ -194,10 +213,44 @@ const Telemetry = struct {
 
 pub const ScanResult = union(enum) {
     eof,
-    scan: *Scan,
+    scan: *ScanUnmanaged,
 };
 
-pub const Scan = struct {
-    imb: [31]u8,
+const Scan = struct {
+    imb: []const u8,
     mailPhase: []const u8,
+};
+
+pub const ScanUnmanaged = extern struct {
+    imb: [*:0]u8,
+    mailPhase: [*:0]u8,
+    imb_len: usize,
+    mailPhase_len: usize,
+
+    pub fn new(allocator: Allocator, scan: Scan) Allocator.Error!*ScanUnmanaged {
+        const imb: [:0]u8 = try allocator.allocSentinel(u8, scan.imb.len, 0);
+        errdefer allocator.free(imb);
+
+        const mailPhase: [:0]u8 = try allocator.allocSentinel(u8, scan.mailPhase.len, 0);
+        errdefer allocator.free(mailPhase);
+
+        const ptr: *ScanUnmanaged = try allocator.create(ScanUnmanaged);
+
+        @memcpy(imb, scan.imb);
+        @memcpy(mailPhase, scan.mailPhase);
+
+        ptr.* = .{
+            .imb = imb.ptr,
+            .imb_len = scan.imb.len,
+            .mailPhase = mailPhase.ptr,
+            .mailPhase_len = scan.mailPhase.len,
+        };
+        return ptr;
+    }
+
+    pub fn deinit(self: *ScanUnmanaged, allocator: Allocator) void {
+        allocator.free(self.imb[0..self.imb_len]);
+        allocator.free(self.mailPhase[0..self.mailPhase_len]);
+        allocator.destroy(self);
+    }
 };

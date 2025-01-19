@@ -118,7 +118,11 @@ internal static partial class LibBindings
     {
         public unsafe byte* imb;
 
-        public IntPtr mailPhase;
+        public UIntPtr imb_len;
+
+        public unsafe byte* mailPhase;
+
+        public UIntPtr mailPhase_len;
     }
 #pragma warning restore CS0649
 
@@ -166,17 +170,17 @@ internal static partial class LibBindings
         }
 
         ScanUnmanaged scan = Marshal.PtrToStructure<ScanUnmanaged>(result.scan);
-        if (scan.mailPhase == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("Scan returned from reader has null mailPhase");
-        }
         unsafe
         {
+            if (scan.mailPhase == null)
+            {
+                throw new InvalidOperationException("Scan returned from reader has null mailPhase");
+            }
             if (scan.imb == null)
             {
                 throw new InvalidOperationException("Scan returned null for IMB");
             }
-            string mailPhaseStr = Marshal.PtrToStringUTF8(scan.mailPhase) ?? string.Empty;
+            string mailPhaseStr = Encoding.ASCII.GetString(scan.mailPhase, (int)scan.mailPhase_len);
             if (!MailPhase.Steps.TryGetValue(mailPhaseStr, out float mailPhase))
             {
                 throw new InvalidOperationException($"Mail phase '{mailPhaseStr}' not recognized");
@@ -184,7 +188,7 @@ internal static partial class LibBindings
 
             return new ScanResult
             {
-                Imb = Encoding.ASCII.GetString(scan.imb, 31),
+                Imb = Encoding.ASCII.GetString(scan.imb, (int)scan.imb_len),
                 MailPhase = mailPhase,
             };
         }
