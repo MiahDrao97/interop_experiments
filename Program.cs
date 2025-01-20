@@ -46,7 +46,8 @@ internal static class Program
         }
         finally
         {
-            Console.WriteLine($"Total time: {elapsedMs}ms. Processed: {idx} Avg processing time: {elapsedMs / (idx == 0 ? 1 : idx)}ms");
+            double avg = elapsedMs / (idx == 0 ? 1 : idx);
+            Console.WriteLine($"Total time: {elapsedMs}ms. Processed: {idx} Avg processing time: {avg}ms");
         }
     }
 }

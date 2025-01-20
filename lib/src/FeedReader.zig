@@ -13,7 +13,7 @@ parent_allocator: Allocator,
 arena: *ArenaAllocator,
 open_square_bracket: bool = false,
 telemetry: Telemetry = .{},
-prev_scan: ?struct { unmanaged: *ScanUnmanaged, parsed: Parsed(Scan) } = null,
+prev_scan: ?Parsed(Scan) = null,
 // this belongs to the OS
 file_handle: *anyopaque,
 
@@ -35,11 +35,10 @@ fn getFile(self: FeedReader) File {
     return .{ .handle = self.file_handle };
 }
 
-pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanResult {
+pub fn nextScan(self: *FeedReader) ScanResult {
     // check for a previous scan and free that memory
     if (self.prev_scan) |prev| {
-        prev.unmanaged.deinit(self.arena.allocator());
-        prev.parsed.deinit();
+        prev.deinit();
     }
 
     // the file is supposed to be a massive JSON file: an array of objects
@@ -48,7 +47,7 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
         var buf: [4096]u8 = undefined;
         const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
             log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-            return error.InvalidFileFormat;
+            return .err(.failedToRead);
         } orelse return .eof;
 
         log.debug("\nParsed object: '{s}'", .{slice});
@@ -60,34 +59,37 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
             ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         ) catch |err| {
             switch (err) {
-                error.Overflow => return error.OutOfMemory,
+                error.Overflow => return .err(.outOfMemory),
                 else => {
                     log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
                         @errorName(err),
                         @errorReturnTrace(),
                         slice,
                     });
-                    return error.InvalidFileFormat;
+                    return .err(.failedToRead);
                 },
             }
         };
         // assign to previous
-        self.prev_scan = .{ .unmanaged = try .new(self.arena.allocator(), parsed.value), .parsed = parsed };
-        return .{ .scan = self.prev_scan.?.unmanaged };
+        self.prev_scan = parsed;
+        return .ok(parsed.value);
     } else {
         // read the square bracket first
         self.openArray() catch |err| {
             switch (err) {
                 error.EndOfStream => {
-                    log.info("Read until end of stream. Presumably an empty file", .{});
+                    log.warn("Read until end of stream. Presumably an empty file", .{});
                     return .eof;
                 },
-                else => |e| return e,
+                else => {
+                    log.err("Unexpected error while opening array: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+                    return .err(.failedToRead);
+                },
             }
         };
         // great, we found the opening square bracket, so we'll denote that
         self.open_square_bracket = true;
-        return try self.nextScan();
+        return self.nextScan();
     }
 }
 
@@ -210,30 +212,43 @@ const Telemetry = struct {
     pos: usize = 0,
 };
 
-pub const ScanResult = union(enum) {
-    eof,
-    scan: *ScanUnmanaged,
-};
-
 const Scan = struct {
     imb: ?[:0]const u8,
     mailPhase: ?[:0]const u8,
 };
 
-pub const ScanUnmanaged = extern struct {
+pub const ReadScanStatus = enum(i32) {
+    success = 0,
+    noActiveReader = 1,
+    failedToRead = 2,
+    outOfMemory = 3,
+    eof = -1,
+};
+
+pub const ScanResult = extern struct {
+    status: ReadScanStatus,
     imb: ?[*:0]const u8,
     mailPhase: ?[*:0]const u8,
 
-    pub fn new(allocator: Allocator, scan: Scan) Allocator.Error!*ScanUnmanaged {
-        const ptr: *ScanUnmanaged = try allocator.create(ScanUnmanaged);
-        ptr.* = .{
+    pub fn ok(scan: Scan) ScanResult {
+        return .{
+            .status = .success,
             .imb = if (scan.imb != null) scan.imb.?.ptr else null,
             .mailPhase = if (scan.mailPhase != null) scan.mailPhase.?.ptr else null,
         };
-        return ptr;
     }
 
-    pub fn deinit(self: *ScanUnmanaged, allocator: Allocator) void {
-        allocator.destroy(self);
+    pub fn err(status: ReadScanStatus) ScanResult {
+        return .{
+            .status = status,
+            .imb = null,
+            .mailPhase = null,
+        };
     }
+
+    pub const eof: ScanResult = .{
+        .status = .eof,
+        .imb = null,
+        .mailPhase = null,
+    };
 };

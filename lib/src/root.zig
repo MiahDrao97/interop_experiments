@@ -6,8 +6,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
 const FeedReader = @import("FeedReader.zig");
-const ScanUnmanaged = FeedReader.ScanUnmanaged;
-const ReadResult = FeedReader.ScanResult;
+const ScanResult = FeedReader.ScanResult;
+const ReadScanStatus = FeedReader.ReadScanStatus;
 
 threadlocal var reader: ?FeedReader = null;
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
@@ -41,23 +41,11 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
     return .opened;
 }
 
-export fn nextScan() ReadScanResult {
+export fn nextScan() ScanResult {
     if (reader) |*current_reader| {
-        const read_result: ReadResult = current_reader.nextScan() catch |err| {
-            switch (err) {
-                error.OutOfMemory => return .{ .status = .outOfMemory },
-                error.InvalidFileFormat => return .{ .status = .failedToRead },
-            }
-        };
-        switch (read_result) {
-            .scan => |s| {
-                log.debug("\nScan: {any}", .{s});
-                return .{ .scan = s };
-            },
-            .eof => return .{ .status = .eof },
-        }
+        return current_reader.nextScan();
     }
-    return .{ .status = .noActiveReader };
+    return .err(.noActiveReader);
 }
 
 export fn close() void {
@@ -74,19 +62,6 @@ pub const NewReaderResult = enum(i32) {
     outOfMemory = 3,
 };
 
-pub const ReadScanStatus = enum(i32) {
-    success = 0,
-    noActiveReader = 1,
-    failedToRead = 2,
-    outOfMemory = 3,
-    eof = -1,
-};
-
-pub const ReadScanResult = extern struct {
-    status: ReadScanStatus = .success,
-    scan: ?*ScanUnmanaged = null,
-};
-
 test "success case" {
     const result: NewReaderResult = open("test_feed.json");
     try testing.expectEqual(.opened, result);
@@ -94,19 +69,22 @@ test "success case" {
 
     try testing.expect(reader != null);
 
-    var scanResult: ReadScanResult = nextScan();
+    var scanResult: ScanResult = nextScan();
     try testing.expectEqual(.success, scanResult.status);
-    try testing.expect(scanResult.scan != null);
-    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.scan.?.imb.?[0..31]);
-    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.scan.?.mailPhase.?[0..50]);
+    try testing.expect(scanResult.imb != null);
+    try testing.expect(scanResult.mailPhase != null);
+    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.imb.?[0..31]);
+    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.mailPhase.?[0..50]);
 
     scanResult = nextScan();
     try testing.expectEqual(.success, scanResult.status);
-    try testing.expect(scanResult.scan != null);
-    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.scan.?.imb.?[0..31]);
-    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.scan.?.mailPhase.?[0..51]);
+    try testing.expect(scanResult.imb != null);
+    try testing.expect(scanResult.mailPhase != null);
+    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.imb.?[0..31]);
+    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.mailPhase.?[0..51]);
 
     scanResult = nextScan();
     try testing.expectEqual(.eof, scanResult.status);
-    try testing.expectEqual(null, scanResult.scan);
+    try testing.expectEqual(null, scanResult.imb);
+    try testing.expectEqual(null, scanResult.mailPhase);
 }

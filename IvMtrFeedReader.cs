@@ -112,19 +112,13 @@ internal static partial class LibBindings
     {
         public int status;
 
-        public IntPtr scan;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ScanUnmanaged
-    {
         public IntPtr imb;
 
         public IntPtr mailPhase;
 
         public override readonly string ToString()
         {
-            return $"{{imb:{imb}, mailPhase:{mailPhase}}}";
+            return $"{{status: {status}, imb:{imb}, mailPhase:{mailPhase}}}";
         }
     }
 #pragma warning restore CS0649
@@ -148,8 +142,8 @@ internal static partial class LibBindings
 
     public static ScanResult? Next()
     {
-        ScanResultUnmanaged result = NextScan();
-        ReadResult status = (ReadResult)result.status;
+        ScanResultUnmanaged scan = NextScan();
+        ReadResult status = (ReadResult)scan.status;
         switch (status)
         {
             case ReadResult.OutOfMemory:
@@ -166,13 +160,6 @@ internal static partial class LibBindings
                 break;
         }
 
-        if (result.scan == IntPtr.Zero)
-        {
-            // this would be a bug
-            throw new InvalidOperationException("Reader status indicated success but returned a null scan object.");
-        }
-
-        ScanUnmanaged scan = Marshal.PtrToStructure<ScanUnmanaged>(result.scan);
         Console.WriteLine($"Returned scan: {scan}");
         if (scan.mailPhase == IntPtr.Zero)
         {
@@ -267,7 +254,7 @@ public static class MailPhase
     [Description("FPARS Processing")]
     public const float FPARSProcessing = 11;
 
-    [Description("Miscellaenous")]
+    [Description("Miscellaneous")]
     public const float Miscellaneous = 12;
 
     [Description("Foreign Processing")]
