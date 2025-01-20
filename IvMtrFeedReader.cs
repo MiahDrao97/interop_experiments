@@ -8,6 +8,7 @@ namespace InteropExperiments;
 public sealed class IvMtrFeedReader : IEnumerable<ScanResult>, IDisposable
 {
     private bool _enumeratorOpened;
+    private bool _disposed;
 
     private IvMtrFeedReader() { }
 
@@ -40,6 +41,7 @@ public sealed class IvMtrFeedReader : IEnumerable<ScanResult>, IDisposable
 
     public IEnumerator<ScanResult> GetEnumerator()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (_enumeratorOpened)
         {
             throw new InvalidOperationException("Enumerator already opened for this file. Instead, dispose this reader and open a new one.");
@@ -52,6 +54,7 @@ public sealed class IvMtrFeedReader : IEnumerable<ScanResult>, IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         LibBindings.CloseReader();
         GC.SuppressFinalize(this);
     }
@@ -106,7 +109,6 @@ internal static partial class LibBindings
         Eof = -1
     }
 
-#pragma warning disable CS0649
     [StructLayout(LayoutKind.Sequential)]
     private struct ScanResultUnmanaged
     {
@@ -118,10 +120,9 @@ internal static partial class LibBindings
 
         public override readonly string ToString()
         {
-            return $"{{status: {status}, imb:{imb}, mailPhase:{mailPhase}}}";
+            return $"{{status:{status}, imb:{imb}, mailPhase:{mailPhase}}}";
         }
     }
-#pragma warning restore CS0649
 
     public static NewReaderResult OpenReader(string fileName)
     {
@@ -143,6 +144,8 @@ internal static partial class LibBindings
     public static ScanResult? Next()
     {
         ScanResultUnmanaged scan = NextScan();
+        Console.WriteLine($"Returned scan: {scan}");
+
         ReadResult status = (ReadResult)scan.status;
         switch (status)
         {
@@ -160,7 +163,7 @@ internal static partial class LibBindings
                 break;
         }
 
-        Console.WriteLine($"Returned scan: {scan}");
+        // success status: we're expecting non-null values
         if (scan.mailPhase == IntPtr.Zero)
         {
             throw new InvalidOperationException("Scan returned from reader has null mailPhase");
