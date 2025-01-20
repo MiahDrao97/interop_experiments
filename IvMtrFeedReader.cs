@@ -120,15 +120,11 @@ internal static partial class LibBindings
     {
         public IntPtr imb;
 
-        public UIntPtr imb_len;
-
         public IntPtr mailPhase;
-
-        public UIntPtr mailPhase_len;
 
         public override readonly string ToString()
         {
-            return $"{{imb:{imb}, imb_len:{imb_len}, mailPhase:{mailPhase}, mailPhase_len:{mailPhase_len}}}";
+            return $"{{imb:{imb}, mailPhase:{mailPhase}}}";
         }
     }
 #pragma warning restore CS0649

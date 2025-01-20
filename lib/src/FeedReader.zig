@@ -15,7 +15,7 @@ open_square_bracket: bool = false,
 telemetry: Telemetry = .{},
 prev_scan: ?struct { unmanaged: *ScanUnmanaged, parsed: Parsed(Scan) } = null,
 // this belongs to the OS
-file_handle_ptr: usize,
+file_handle: *anyopaque,
 
 const FeedReader = @This();
 
@@ -27,13 +27,12 @@ pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
     return .{
         .parent_allocator = allocator,
         .arena = arena_ptr,
-        .file_handle_ptr = @intFromPtr(file.handle),
+        .file_handle = file.handle,
     };
 }
 
 fn getFile(self: FeedReader) File {
-    const handle: *anyopaque = @ptrFromInt(self.file_handle_ptr);
-    return .{ .handle = handle };
+    return .{ .handle = self.file_handle };
 }
 
 pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanResult {
@@ -58,7 +57,7 @@ pub fn nextScan(self: *FeedReader) error{ InvalidFileFormat, OutOfMemory }!ScanR
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         ) catch |err| {
             switch (err) {
                 error.Overflow => return error.OutOfMemory,
@@ -217,40 +216,24 @@ pub const ScanResult = union(enum) {
 };
 
 const Scan = struct {
-    imb: []const u8,
-    mailPhase: []const u8,
+    imb: ?[:0]const u8,
+    mailPhase: ?[:0]const u8,
 };
 
 pub const ScanUnmanaged = extern struct {
-    imb: [*:0]u8,
-    imb_len: usize,
-    mailPhase: [*:0]u8,
-    mailPhase_len: usize,
+    imb: ?[*:0]const u8,
+    mailPhase: ?[*:0]const u8,
 
     pub fn new(allocator: Allocator, scan: Scan) Allocator.Error!*ScanUnmanaged {
-        const imb: [:0]u8 = try allocator.allocSentinel(u8, scan.imb.len, 0);
-        errdefer allocator.free(imb);
-
-        const mailPhase: [:0]u8 = try allocator.allocSentinel(u8, scan.mailPhase.len, 0);
-        errdefer allocator.free(mailPhase);
-
         const ptr: *ScanUnmanaged = try allocator.create(ScanUnmanaged);
-
-        @memcpy(imb, scan.imb);
-        @memcpy(mailPhase, scan.mailPhase);
-
         ptr.* = .{
-            .imb = imb.ptr,
-            .imb_len = scan.imb.len,
-            .mailPhase = mailPhase.ptr,
-            .mailPhase_len = scan.mailPhase.len,
+            .imb = if (scan.imb != null) scan.imb.?.ptr else null,
+            .mailPhase = if (scan.mailPhase != null) scan.mailPhase.?.ptr else null,
         };
         return ptr;
     }
 
     pub fn deinit(self: *ScanUnmanaged, allocator: Allocator) void {
-        allocator.free(self.imb[0..self.imb_len]);
-        allocator.free(self.mailPhase[0..self.mailPhase_len]);
         allocator.destroy(self);
     }
 };

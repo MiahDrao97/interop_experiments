@@ -97,14 +97,14 @@ test "success case" {
     var scanResult: ReadScanResult = nextScan();
     try testing.expectEqual(.success, scanResult.status);
     try testing.expect(scanResult.scan != null);
-    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.scan.?.imb[0..scanResult.scan.?.imb_len]);
-    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.scan.?.mailPhase[0..scanResult.scan.?.mailPhase_len]);
+    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.scan.?.imb.?[0..31]);
+    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.scan.?.mailPhase.?[0..50]);
 
     scanResult = nextScan();
     try testing.expectEqual(.success, scanResult.status);
     try testing.expect(scanResult.scan != null);
-    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.scan.?.imb[0..scanResult.scan.?.imb_len]);
-    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.scan.?.mailPhase[0..scanResult.scan.?.mailPhase_len]);
+    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.scan.?.imb.?[0..31]);
+    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.scan.?.mailPhase.?[0..51]);
 
     scanResult = nextScan();
     try testing.expectEqual(.eof, scanResult.status);
