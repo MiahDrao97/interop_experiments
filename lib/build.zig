@@ -29,6 +29,8 @@ pub fn build(b: *Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .single_threaded = false,
+        .error_tracing = true,
     });
 
     // This declares intent for the library to be installed into the standard

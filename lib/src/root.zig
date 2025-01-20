@@ -3,6 +3,7 @@ const testing = std.testing;
 const log = std.log;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
 const FeedReader = @import("FeedReader.zig");
@@ -10,8 +11,8 @@ const ScanResult = FeedReader.ScanResult;
 const ReadScanStatus = FeedReader.ReadScanStatus;
 
 threadlocal var reader: ?FeedReader = null;
-var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-var alloc = gpa.allocator();
+var gpa: GeneralPurposeAllocator(.{}) = .init;
+var alloc: Allocator = gpa.allocator();
 
 /// Open a file from the USPS feeder, returning a status code for the operation
 export fn open(fileName: [*:0]const u8) NewReaderResult {
@@ -23,7 +24,7 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
 
     const file: File = std.fs.cwd().openFileZ(
         fileName,
-        File.OpenFlags{ .mode = .read_only, .allow_ctty = true, .lock = .exclusive },
+        File.OpenFlags{ .mode = .read_only, .lock = .exclusive },
     ) catch |err| {
         log.err("Failed to open file '{s}': {s} -> {?}", .{ fileName, @errorName(err), @errorReturnTrace() });
         return .failedToOpen;
@@ -35,7 +36,6 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
                 log.err("FATAL: Out of memory. Last attempted allocation: {?}", .{@errorReturnTrace()});
                 return .outOfMemory;
             },
-            else => unreachable,
         }
     };
 

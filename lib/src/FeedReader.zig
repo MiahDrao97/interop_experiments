@@ -7,6 +7,7 @@ const Parsed = json.Parsed;
 const ParseOptions = json.ParseOptions;
 const json = std.json;
 const log = std.log;
+const ascii = std.ascii;
 
 parent_allocator: Allocator,
 arena: *ArenaAllocator,
@@ -109,7 +110,7 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         if (byte == '\n') {
             new_line = true;
         }
-        if (std.ascii.isWhitespace(byte)) continue;
+        if (ascii.isWhitespace(byte)) continue;
 
         if (byte == '[') {
             return;
@@ -166,7 +167,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
         }
 
         if (byte == ',' and i == 0) continue;
-        if (!inside_quotes and std.ascii.isWhitespace(byte)) continue;
+        if (!inside_quotes and ascii.isWhitespace(byte)) continue;
 
         if (byte == ']' and i == 0) {
             // we're all done here
