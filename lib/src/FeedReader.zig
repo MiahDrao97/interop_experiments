@@ -30,10 +30,6 @@ pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
     };
 }
 
-fn getFile(self: FeedReader) File {
-    return .{ .handle = self.file_handle };
-}
-
 pub fn nextScan(self: *FeedReader) ScanResult {
     // check for a previous scan and free that memory
     if (self.prev_scan) |prev| {
@@ -94,8 +90,12 @@ pub fn nextScan(self: *FeedReader) ScanResult {
     }
 }
 
+fn getFile(self: FeedReader) File {
+    return .{ .handle = self.file_handle };
+}
+
 fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    var reader: AnyReader = self.getFile().reader().any();
+    const reader: AnyReader = self.getFile().reader().any();
     while (reader.readByte()) |byte| {
         var new_line: bool = false;
         defer {
@@ -137,7 +137,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     var close_brace: bool = false;
     var inside_quotes: bool = false;
     var i: usize = 0;
-    var reader: AnyReader = self.getFile().reader().any();
+    const reader: AnyReader = self.getFile().reader().any();
     while (reader.readByte()) |byte| {
         if (i >= buf.len) {
             log.err("FATAL: Overflowed buffer of {d} bytes at line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{

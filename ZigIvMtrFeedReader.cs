@@ -1,11 +1,10 @@
 using System.Collections;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 
 namespace InteropExperiments;
 
-public sealed class IvMtrFeedReader : IEnumerable<ScanResult>, IDisposable
+public sealed class IvMtrFeedReader : IIvMtrFeedReader
 {
     private bool _enumeratorOpened;
     private bool _disposed;
@@ -31,8 +30,8 @@ public sealed class IvMtrFeedReader : IEnumerable<ScanResult>, IDisposable
                     return OpenFile(filePath, false);
                 }
                 throw new InvalidOperationException($"Thread {Thread.GetCurrentProcessorId()} already has a feeder reader opened. Cannot open another file until the current reader is closed.");
-            case LibBindings.NewReaderResult.OutOfMemory:
 #pragma warning disable CA2201
+            case LibBindings.NewReaderResult.OutOfMemory:
                 throw new OutOfMemoryException($"Reader out of memory");
 #pragma warning restore CA2201
         }
@@ -136,10 +135,7 @@ internal static partial class LibBindings
         }
     }
 
-    public static void CloseReader()
-    {
-        Close();
-    }
+    public static void CloseReader() => Close();
 
     public static ScanResult? Next()
     {
@@ -149,8 +145,8 @@ internal static partial class LibBindings
         ReadResult status = (ReadResult)scan.status;
         switch (status)
         {
-            case ReadResult.OutOfMemory:
 #pragma warning disable CA2201
+            case ReadResult.OutOfMemory:
                 throw new OutOfMemoryException($"Reader out of memory");
 #pragma warning restore CA2201
             case ReadResult.Eof:
@@ -173,94 +169,11 @@ internal static partial class LibBindings
             throw new InvalidOperationException("Scan returned null for IMB");
         }
         string mailPhaseStr = Marshal.PtrToStringAnsi(scan.mailPhase) ?? throw new InvalidOperationException($"Mail phase was not valid");
-        if (!MailPhase.Steps.TryGetValue(mailPhaseStr, out float mailPhase))
-        {
-            throw new InvalidOperationException($"Mail phase '{mailPhaseStr}' not recognized");
-        }
 
         return new ScanResult
         {
             Imb = Marshal.PtrToStringAnsi(scan.imb) ?? throw new InvalidOperationException($"IMB was not valid"),
-            MailPhase = mailPhase,
+            MailPhase = (MailPhase)mailPhaseStr,
         };
     }
 }
-
-public class ScanResult
-{
-    public required string Imb { get; set; }
-
-    public required float MailPhase { get; set; }
-}
-
-public static class MailPhase
-{
-    public static Dictionary<string, float> Steps { get; } = new()
-    {
-        ["Phase 0 - Origin Processing Cancellation of Postage"] = Phase0,
-        ["Phase 1 - Origin Processing"] = Phase1,
-        ["Phase 1a - Origin Primary Processing"] = Phase1a,
-        ["Phase 1b - Origin Secondary Processing"] = Phase1b,
-        ["Phase 2 - Destination Processing"] = Phase2,
-        ["Phase 2a - Destination MMP Processing"] = Phase2a,
-        ["Phase 2b - Destination SCF Processing"] = Phase2b,
-        ["Phase 2c - Destination Primary Processing"] = Phase2c,
-        ["Phase 3a - Destination Secondary Processing"] = Phase3a,
-        ["Phase 3b - Destination Box Mail Processing"] = Phase3b,
-        ["Phase 3c - Destination Sequenced Carrier Sortation"] = Phase3c,
-        ["Phase 4c - Delivery"] = Phase4c,
-        ["PARS Processing"] = PARSProcessing,
-        ["FPARS Processing"] = FPARSProcessing,
-        ["Miscellaneous"] = Miscellaneous,
-        ["Foreign Processing"] = ForeignProcessing,
-    };
-
-    [Description("Phase 0 - Origin Processing Cancellation of Postage")]
-    public const float Phase0 = 0;
-
-    [Description("Phase 1 - Origin Processing")]
-    public const float Phase1 = 1;
-
-    [Description("Phase 1a - Origin Primary Processing")]
-    public const float Phase1a = 1.1F;
-
-    [Description("Phase 1b - Origin Secondary Processing")]
-    public const float Phase1b = 1.2F;
-
-    [Description("Phase 2 - Destination Processing")]
-    public const float Phase2 = 2;
-
-    [Description("Phase 2a - Destination MMP Processing")]
-    public const float Phase2a = 2.1F;
-
-    [Description("Phase 2b - Destination SCF Processing")]
-    public const float Phase2b = 2.2F;
-
-    [Description("Phase 2c - Destination Primary Processing")]
-    public const float Phase2c = 2.3F;
-
-    [Description("Phase 3a - Destination Secondary Processing")]
-    public const float Phase3a = 3.1F;
-
-    [Description("Phase 3b - Destination Box Mail Processing")]
-    public const float Phase3b = 3.2F;
-
-    [Description("Phase 3c - Destination Sequenced Carrier Sortation")]
-    public const float Phase3c = 3.3F;
-
-    [Description("Phase 4c - Delivery")]
-    public const float Phase4c = 3.3F;
-
-    [Description("PARS Processing")]
-    public const float PARSProcessing = 10;
-
-    [Description("FPARS Processing")]
-    public const float FPARSProcessing = 11;
-
-    [Description("Miscellaneous")]
-    public const float Miscellaneous = 12;
-
-    [Description("Foreign Processing")]
-    public const float ForeignProcessing = 13;
-}
-
