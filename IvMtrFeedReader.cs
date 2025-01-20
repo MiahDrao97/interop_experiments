@@ -221,7 +221,7 @@ public static class MailPhase
         ["Phase 4c - Delivery"] = Phase4c,
         ["PARS Processing"] = PARSProcessing,
         ["FPARS Processing"] = FPARSProcessing,
-        ["Miscellaenous"] = Miscellaenous,
+        ["Miscellaneous"] = Miscellaneous,
         ["Foreign Processing"] = ForeignProcessing,
     };
 
@@ -268,7 +268,7 @@ public static class MailPhase
     public const float FPARSProcessing = 11;
 
     [Description("Miscellaenous")]
-    public const float Miscellaenous = 12;
+    public const float Miscellaneous = 12;
 
     [Description("Foreign Processing")]
     public const float ForeignProcessing = 13;

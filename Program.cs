@@ -1,4 +1,6 @@
-﻿namespace InteropExperiments;
+﻿using System.Diagnostics;
+
+namespace InteropExperiments;
 
 internal static class Program
 {
@@ -15,23 +17,36 @@ internal static class Program
             count = parsedCount;
         }
 
+        Stopwatch sw = Stopwatch.StartNew();
         using IvMtrFeedReader reader = IvMtrFeedReader.OpenFile(args[0]);
+        Console.WriteLine($"Opened reader in {sw.ElapsedMilliseconds}ms");
 
         int idx = 0;
-        if (count > 0)
+        long elapsedMs = sw.ElapsedMilliseconds;
+        try
         {
-            foreach (ScanResult scan in reader)
+            if (count != 0)
             {
-                Console.WriteLine($"Read scan[{idx}]. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
-                idx++;
-                if (count.HasValue)
+                sw.Restart();
+                foreach (ScanResult scan in reader)
                 {
-                    if (idx >= count)
+                    Console.WriteLine($"Read scan[{idx}] in {sw.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                    idx++;
+                    if (count.HasValue)
                     {
-                        break;
+                        if (idx >= count)
+                        {
+                            break;
+                        }
                     }
+                    elapsedMs += sw.ElapsedMilliseconds;
+                    sw.Restart();
                 }
             }
+        }
+        finally
+        {
+            Console.WriteLine($"Total time: {elapsedMs}ms. Processed: {idx} Avg processing time: {elapsedMs / (idx == 0 ? 1 : idx)}ms");
         }
     }
 }
