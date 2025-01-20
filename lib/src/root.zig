@@ -11,6 +11,7 @@ const ReadScanStatus = FeedReader.ReadScanStatus;
 
 threadlocal var reader: ?FeedReader = null;
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+var alloc = gpa.allocator();
 
 /// Open a file from the USPS feeder, returning a status code for the operation
 export fn open(fileName: [*:0]const u8) NewReaderResult {
@@ -28,7 +29,7 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
         return .failedToOpen;
     };
 
-    reader = FeedReader.new(gpa.allocator(), file) catch |err| {
+    reader = FeedReader.new(alloc, file) catch |err| {
         switch (err) {
             Allocator.Error.OutOfMemory => {
                 log.err("FATAL: Out of memory. Last attempted allocation: {?}", .{@errorReturnTrace()});
@@ -63,6 +64,9 @@ pub const NewReaderResult = enum(i32) {
 };
 
 test "success case" {
+    // switch to testing allocator to detect memory leaks
+    alloc = testing.allocator;
+
     const result: NewReaderResult = open("test_feed.json");
     try testing.expectEqual(.opened, result);
     defer close();

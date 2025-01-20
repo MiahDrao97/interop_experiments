@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const MemoryPool = std.heap.MemoryPool;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
 const Parsed = json.Parsed;
@@ -21,7 +20,6 @@ const FeedReader = @This();
 
 pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
-    errdefer allocator.destroy(arena_ptr);
     arena_ptr.* = .init(allocator);
 
     return .{
@@ -57,6 +55,8 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             self.arena.allocator(),
             slice,
             ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            // Alloc always means that strings will be copied and heap allocated for our parsed scan.
+            // Since our slice is on the stack, wd'd return a dangling pointer otherwise.
         ) catch |err| {
             switch (err) {
                 error.Overflow => return .err(.outOfMemory),
@@ -131,15 +131,21 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
     }
 }
 
-fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated }!?[]const u8 {
+fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated, BufferOverflow }!?[]const u8 {
     var open_brace: bool = false;
     var close_brace: bool = false;
     var inside_quotes: bool = false;
     var i: usize = 0;
     var reader: AnyReader = self.getFile().reader().any();
     while (reader.readByte()) |byte| {
-        // don't allow overflow
-        if (i >= buf.len) break;
+        if (i >= buf.len) {
+            log.err("FATAL: Overflowed buffer of {d} bytes at line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
+                buf.len,
+                self.telemetry.line,
+                self.telemetry.pos,
+            });
+            return error.BufferOverflow;
+        }
 
         var new_line: bool = false;
         defer {
