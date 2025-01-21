@@ -95,6 +95,7 @@ public class MailPhase
         ["Phase 2a - Destination MMP Processing"] = Phase2a!,
         ["Phase 2b - Destination SCF Processing"] = Phase2b!,
         ["Phase 2c - Destination Primary Processing"] = Phase2c!,
+        ["Phase 3c- Destination Sequenced Carrier Sortation"] = Phase3!,
         ["Phase 3a - Destination Secondary Processing"] = Phase3a!,
         ["Phase 3b - Destination Box Mail Processing"] = Phase3b!,
         ["Phase 3c - Destination Sequenced Carrier Sortation"] = Phase3c!,
@@ -120,6 +121,8 @@ public class MailPhase
     public static MailPhase Phase2b { get; } = new(2.2F, "Phase 2b - Destination SCF Processing");
 
     public static MailPhase Phase2c { get; } = new(2.3F, "Phase 2c - Destination Primary Processing");
+
+    public static MailPhase Phase3 { get; } = new(3, "Phase 3c- Destination Sequenced Carrier Sortation");
 
     public static MailPhase Phase3a { get; } = new(3.1F, "Phase 3a - Destination Secondary Processing");
 

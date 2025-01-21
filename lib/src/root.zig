@@ -31,7 +31,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         return .failedToOpen;
     };
 
-    reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0)) catch |err| {
+    reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
         @branchHint(.cold);
         switch (err) {
             Allocator.Error.OutOfMemory => {
@@ -68,6 +68,7 @@ pub const NewReaderResult = enum(i32) {
 test "success case" {
     // switch to testing allocator to detect memory leaks
     alloc = testing.allocator;
+    testing.log_level = .debug;
 
     const result: NewReaderResult = open("test_feed.json");
     try testing.expectEqual(.opened, result);

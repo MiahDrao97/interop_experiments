@@ -14,29 +14,27 @@ const fd_t = posix.fd_t;
 
 parent_allocator: Allocator,
 arena: *ArenaAllocator,
-open_square_bracket: bool = false,
+open_events: bool = false,
 telemetry: Telemetry,
-// this belongs to the OS
-file_handle: fd_t,
+file_stream: FileStream(6000),
 
 const FeedReader = @This();
-const is_windows: bool = @import("builtin").os.tag == .windows;
 
-pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8) Allocator.Error!FeedReader {
+pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
     arena_ptr.* = .init(allocator);
 
     return .{
         .parent_allocator = allocator,
         .arena = arena_ptr,
-        .file_handle = file.handle,
         .telemetry = .init(file_path),
+        .file_stream = .init(file, with_file_lock),
     };
 }
 
 pub fn nextScan(self: *FeedReader) ScanResult {
     // the file is supposed to be a massive JSON file: an array of objects
-    if (self.open_square_bracket) {
+    if (self.open_events) {
         // parse JSON object: from '{' until '}'
         var buf: [4096]u8 = undefined;
         const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
@@ -66,11 +64,16 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         };
         return .ok(parsed);
     } else {
-        // read the square bracket first
-        self.openArray() catch |err| {
+        // we only care about the "events" field
+        self.openEvents() catch |err| {
             switch (err) {
                 error.EndOfStream => {
-                    log.warn("Read until end of stream. Presumably an empty file", .{});
+                    log.warn("Read until end of stream. Presumably an empty file ('{s}', line {d}, pos {d}) -> {?}", .{
+                        self.telemetry.file_path,
+                        self.telemetry.line,
+                        self.telemetry.pos,
+                        @errorReturnTrace(),
+                    });
                     return .eof;
                 },
                 else => {
@@ -80,31 +83,22 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                 },
             }
         };
-        // great, we found the opening square bracket, so we'll denote that
-        self.open_square_bracket = true;
+        // great, we're in the "events" field and past opening square bracket, so we'll denote that
+        self.open_events = true;
         return self.nextScan();
     }
 }
 
-fn getFile(self: FeedReader) File {
-    return .{ .handle = self.file_handle };
-}
-
-fn readByte(self: FeedReader) anyerror!u8 {
-    // extracted from std lib
-    var buffer: [1]u8 = undefined;
-    var bytes_read: usize = undefined;
-    if (is_windows) {
-        bytes_read = try windows.ReadFile(self.file_handle, &buffer, null);
-    } else {
-        bytes_read = try posix.read(self.file_handle, &buffer);
-    }
-    return if (bytes_read == 1) buffer[0] else error.EndOfStream;
-}
-
-fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    // first read: read everything to avoid a bunch of sys calls
-    while (self.readByte()) |byte| {
+fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
+    const key: []const u8 = "events";
+    var inside_quotes: bool = false;
+    var idx: usize = 0;
+    var inside_events: bool = false;
+    while (self.file_stream.nextByte()) |byte| {
+        if (byte == null) {
+            return error.EndOfStream;
+        }
+        log.debug("Next byte: {c}", .{byte.?});
         var new_line: bool = false;
         defer {
             if (!new_line) {
@@ -118,13 +112,77 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         if (byte == '\n') {
             new_line = true;
         }
-        if (ascii.isWhitespace(byte)) continue;
+        if (!inside_quotes and ascii.isWhitespace(byte.?)) continue;
+
+        if (byte == '"') {
+            inside_quotes = !inside_quotes;
+            continue;
+        }
+
+        if (inside_quotes) {
+            log.debug("Byte inside quotes: {c}", .{byte.?});
+            if (idx < key.len) {
+                if (byte == key[idx]) {
+                    idx += 1;
+                    if (idx == key.len) {
+                        inside_events = true;
+                        log.debug("Found events field '{s}', line {d}, pos {d}", .{
+                            self.telemetry.file_path,
+                            self.telemetry.line,
+                            self.telemetry.pos,
+                        });
+                    }
+                } else {
+                    idx = 0;
+                }
+            }
+        } else {
+            idx = 0;
+        }
+
+        if (!inside_quotes and inside_events and byte == ':') {
+            try self.openArray();
+            return;
+        }
+    } else |err| {
+        log.err("Encountered error opening events ('{s}', line: {d}, pos: {d}): {s} -> {?}", .{
+            self.telemetry.file_path,
+            self.telemetry.line,
+            self.telemetry.pos,
+            @errorName(err),
+            @errorReturnTrace(),
+        });
+        return error.InvalidFileFormat;
+    }
+}
+
+fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
+    // first read: read everything to avoid a bunch of sys calls
+    while (self.file_stream.nextByte()) |byte| {
+        if (byte == null) {
+            return error.EndOfStream;
+        }
+
+        var new_line: bool = false;
+        defer {
+            if (!new_line) {
+                self.telemetry.pos += 1;
+            } else {
+                self.telemetry.pos = 0;
+                self.telemetry.line += 1;
+            }
+        }
+
+        if (byte == '\n') {
+            new_line = true;
+        }
+        if (ascii.isWhitespace(byte.?)) continue;
 
         if (byte == '[') {
             return;
         }
-        log.err("First non-whitespace character was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
-            byte,
+        log.err("First non-whitespace character in \"events\" field was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
+            byte.?,
             self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
@@ -147,7 +205,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     var close_brace: bool = false;
     var inside_quotes: bool = false;
     var i: usize = 0;
-    while (self.readByte()) |byte| {
+    while (self.file_stream.nextByte()) |byte| {
         if (i >= buf.len) {
             log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
                 buf.len,
@@ -156,6 +214,13 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
                 self.telemetry.pos,
             });
             return error.BufferOverflow;
+        }
+
+        if (byte == null) {
+            if (i == 0) {
+                return null;
+            }
+            return buf;
         }
 
         var new_line: bool = false;
@@ -177,7 +242,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
         }
 
         if (byte == ',' and i == 0) continue;
-        if (!inside_quotes and ascii.isWhitespace(byte)) continue;
+        if (!inside_quotes and ascii.isWhitespace(byte.?)) continue;
 
         if (byte == ']' and i == 0) {
             // we're all done here
@@ -186,17 +251,17 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
 
         defer i += 1;
         if (!open_brace and byte == '{') {
-            buf[i] = byte;
+            buf[i] = byte.?;
             open_brace = true;
         } else if (open_brace) {
-            buf[i] = byte;
+            buf[i] = byte.?;
             if (!inside_quotes and byte == '}') {
                 close_brace = true;
                 break;
             }
         } else {
             log.err("Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
-                byte,
+                byte.?,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
@@ -206,7 +271,12 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     } else |err| {
         // probably just the end
         switch (err) {
-            error.EndOfStream => return null,
+            error.EndOfStream => {
+                if (i == 0) {
+                    return null;
+                }
+                return buf;
+            },
             else => {
                 @branchHint(.cold);
                 log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
@@ -231,8 +301,7 @@ pub fn deinit(self: FeedReader) void {
     const parent_allocator: Allocator = self.parent_allocator;
     const arena_ptr: *ArenaAllocator = self.arena;
 
-    const file: File = self.getFile();
-    file.close();
+    self.file_stream.close();
     self.arena.deinit();
     parent_allocator.destroy(arena_ptr);
 }
@@ -250,6 +319,56 @@ const Telemetry = struct {
         };
     }
 };
+
+fn FileStream(comptime buf_size: usize) type {
+    return struct {
+        file_handle: fd_t,
+        file_locked: bool,
+        buf: [buf_size]u8 = [_]u8{0} ** buf_size,
+        read_buffer: []u8 = undefined,
+        cursor: isize = -1,
+        eof: bool = false,
+
+        pub fn init(file: File, with_file_lock: bool) @This() {
+            return .{
+                .file_handle = file.handle,
+                .file_locked = with_file_lock,
+            };
+        }
+
+        pub fn nextByte(self: *@This()) !?u8 {
+            if (self.cursor < 0 or self.cursor == self.read_buffer.len) {
+                if (self.eof) {
+                    return null;
+                }
+                try self.nextSegment();
+                self.cursor = 0;
+            }
+            defer self.cursor += 1;
+
+            return self.read_buffer[@bitCast(self.cursor)];
+        }
+
+        fn nextSegment(self: *@This()) !void {
+            const file: File = .{ .handle = self.file_handle };
+            const reader: AnyReader = file.reader().any();
+
+            const bytes_read: usize = try reader.readAtLeast(&self.buf, buf_size);
+            if (bytes_read < buf_size) {
+                self.eof = true;
+            }
+            self.read_buffer = self.buf[0..bytes_read];
+        }
+
+        pub fn close(self: @This()) void {
+            const file: File = .{ .handle = self.file_handle };
+            if (self.file_locked) {
+                file.unlock();
+            }
+            file.close();
+        }
+    };
+}
 
 const Scan = struct {
     imb: ?[:0]const u8,

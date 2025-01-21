@@ -45,7 +45,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
     private struct Enumerator(FileStream fileStream) : IEnumerator<ScanResult>
     {
         private readonly FileStream _stream = fileStream;
-        private bool _openArray;
+        private bool _openEvents;
 
         public bool MoveNext()
         {
@@ -70,14 +70,63 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
 
         private ScanResult? GetNext()
         {
-            if (!_openArray)
+            if (!_openEvents)
             {
-                return OpenArray();
+                return OpenEvents();
             }
             else
             {
                 return ParseObject();
             }
+        }
+
+        private ScanResult? OpenEvents()
+        {
+            ReadOnlySpan<char> eventsKey = "events";
+            bool insideQuotes = false;
+            bool insideEvents = false;
+            int i = 0;
+            while (true)
+            {
+                int nextByte = _stream.ReadByte();
+                if (nextByte < 1)
+                {
+                    // end of stream
+                    break;
+                }
+                if (!insideQuotes && char.IsWhiteSpace((char)nextByte))
+                {
+                    continue;
+                }
+                if ((char)nextByte == '"')
+                {
+                    insideQuotes = !insideQuotes;
+                }
+                if (insideQuotes)
+                {
+                    if (i < eventsKey.Length)
+                    {
+                        if (eventsKey[i] == (char)nextByte)
+                        {
+                            i++;
+                            if (i == eventsKey.Length)
+                            {
+                                insideEvents = true;
+                            }
+                        }
+                        else
+                        {
+                            i = 0;
+                        }
+                    }
+                }
+
+                if (!insideQuotes && insideEvents && (char)nextByte == ':')
+                {
+                    return OpenArray();
+                }
+            }
+            return null;
         }
 
         private ScanResult? OpenArray()
@@ -105,7 +154,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
                 }
             }
 
-            _openArray = true;
+            _openEvents = true;
             return GetNext();
         }
 

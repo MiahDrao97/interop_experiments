@@ -44,6 +44,7 @@ pub fn build(b: *Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .error_tracing = true,
     });
 
     const run_lib_unit_tests: *Run = b.addRunArtifact(lib_unit_tests);
