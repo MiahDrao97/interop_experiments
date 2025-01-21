@@ -46,11 +46,6 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
 
 export fn nextScan() ScanResult {
     if (reader) |*current_reader| {
-        const start_time: i64 = std.time.microTimestamp();
-        defer {
-            const end_time: i64 = std.time.microTimestamp();
-            std.debug.print("Zig side: Finished scan in {d}us\n", .{end_time - start_time});
-        }
         return current_reader.nextScan();
     }
     return .err(.noActiveReader);

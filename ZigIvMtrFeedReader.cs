@@ -140,8 +140,6 @@ internal static partial class LibBindings
     public static ScanResult? Next()
     {
         ScanResultUnmanaged scan = NextScan();
-        Console.WriteLine($"Returned scan: {scan}");
-
         ReadResult status = (ReadResult)scan.status;
         switch (status)
         {

@@ -8,15 +8,19 @@ const ParseOptions = json.ParseOptions;
 const json = std.json;
 const log = std.log;
 const ascii = std.ascii;
+const windows = std.os.windows;
+const posix = std.posix;
+const fd_t = posix.fd_t;
 
 parent_allocator: Allocator,
 arena: *ArenaAllocator,
 open_square_bracket: bool = false,
 telemetry: Telemetry,
 // this belongs to the OS
-file_handle: *anyopaque,
+file_handle: fd_t,
 
 const FeedReader = @This();
+const is_windows: bool = @import("builtin").os.tag == .windows;
 
 pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
@@ -86,9 +90,21 @@ fn getFile(self: FeedReader) File {
     return .{ .handle = self.file_handle };
 }
 
+fn readByte(self: FeedReader) anyerror!u8 {
+    // extracted from std lib
+    var buffer: [1]u8 = undefined;
+    var bytes_read: usize = undefined;
+    if (is_windows) {
+        bytes_read = try windows.ReadFile(self.file_handle, &buffer, null);
+    } else {
+        bytes_read = try posix.read(self.file_handle, &buffer);
+    }
+    return if (bytes_read == 1) buffer[0] else error.EndOfStream;
+}
+
 fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    const reader: AnyReader = self.getFile().reader().any();
-    while (reader.readByte()) |byte| {
+    // first read: read everything to avoid a bunch of sys calls
+    while (self.readByte()) |byte| {
         var new_line: bool = false;
         defer {
             if (!new_line) {
@@ -131,8 +147,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     var close_brace: bool = false;
     var inside_quotes: bool = false;
     var i: usize = 0;
-    const reader: AnyReader = self.getFile().reader().any();
-    while (reader.readByte()) |byte| {
+    while (self.readByte()) |byte| {
         if (i >= buf.len) {
             log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
                 buf.len,
