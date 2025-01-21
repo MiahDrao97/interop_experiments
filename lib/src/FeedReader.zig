@@ -217,7 +217,6 @@ pub fn deinit(self: FeedReader) void {
     const arena_ptr: *ArenaAllocator = self.arena;
 
     const file: File = self.getFile();
-    file.unlock();
     file.close();
     self.arena.deinit();
     parent_allocator.destroy(arena_ptr);
