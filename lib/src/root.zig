@@ -1,7 +1,8 @@
 const std = @import("std");
 const testing = std.testing;
 const log = std.log;
-const Allocator = std.mem.Allocator;
+const mem = std.mem;
+const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 const File = std.fs.File;
@@ -15,7 +16,7 @@ var gpa: GeneralPurposeAllocator(.{}) = .init;
 var alloc: Allocator = gpa.allocator();
 
 /// Open a file from the USPS feeder, returning a status code for the operation
-export fn open(fileName: [*:0]const u8) NewReaderResult {
+export fn open(file_path: [*:0]const u8) NewReaderResult {
     if (reader) |_| {
         // reader is already active on another file
         log.err("This thread already has an open reader. Close the current reader before opening a new one.", .{});
@@ -23,14 +24,15 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
     }
 
     const file: File = std.fs.cwd().openFileZ(
-        fileName,
-        File.OpenFlags{ .mode = .read_only, .lock = .exclusive },
+        file_path,
+        File.OpenFlags{ .mode = .read_only, .allow_ctty = true, .lock = .exclusive },
     ) catch |err| {
-        log.err("Failed to open file '{s}': {s} -> {?}", .{ fileName, @errorName(err), @errorReturnTrace() });
+        log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
         return .failedToOpen;
     };
 
-    reader = FeedReader.new(alloc, file) catch |err| {
+    reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0)) catch |err| {
+        @branchHint(.cold);
         switch (err) {
             Allocator.Error.OutOfMemory => {
                 log.err("FATAL: Out of memory. Last attempted allocation: {?}", .{@errorReturnTrace()});
@@ -44,6 +46,11 @@ export fn open(fileName: [*:0]const u8) NewReaderResult {
 
 export fn nextScan() ScanResult {
     if (reader) |*current_reader| {
+        const start_time: i64 = std.time.microTimestamp();
+        defer {
+            const end_time: i64 = std.time.microTimestamp();
+            std.debug.print("Zig side: Finished scan in {d}us\n", .{end_time - start_time});
+        }
         return current_reader.nextScan();
     }
     return .err(.noActiveReader);

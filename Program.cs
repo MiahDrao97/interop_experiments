@@ -18,7 +18,7 @@ internal static class Program
         }
 
         Stopwatch sw = Stopwatch.StartNew();
-        using IvMtrFeedReader reader = IvMtrFeedReader.OpenFile(args[0]);
+        using ZigIvMtrFeedReader reader = ZigIvMtrFeedReader.OpenFile(args[0]);
         Console.WriteLine($"Opened reader in {sw.ElapsedMilliseconds}ms");
 
         int idx = 0;

@@ -4,19 +4,19 @@ using System.Text;
 
 namespace InteropExperiments;
 
-public sealed class IvMtrFeedReader : IIvMtrFeedReader
+public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
 {
     private bool _enumeratorOpened;
     private bool _disposed;
 
-    private IvMtrFeedReader() { }
+    private ZigIvMtrFeedReader() { }
 
-    ~IvMtrFeedReader()
+    ~ZigIvMtrFeedReader()
     {
         LibBindings.CloseReader();
     }
 
-    public static IvMtrFeedReader OpenFile(string filePath, bool terminateOpenReader = false)
+    public static ZigIvMtrFeedReader OpenFile(string filePath, bool terminateOpenReader = false)
     {
         LibBindings.NewReaderResult result = LibBindings.OpenReader(filePath);
         switch (result)
@@ -35,7 +35,7 @@ public sealed class IvMtrFeedReader : IIvMtrFeedReader
                 throw new OutOfMemoryException($"Reader out of memory");
 #pragma warning restore CA2201
         }
-        return new IvMtrFeedReader();
+        return new ZigIvMtrFeedReader();
     }
 
     public IEnumerator<ScanResult> GetEnumerator()
@@ -64,7 +64,7 @@ public sealed class IvMtrFeedReader : IIvMtrFeedReader
 
         readonly object IEnumerator.Current => Current;
 
-        public void Reset() => throw new NotSupportedException($"This enumerator does not support resetting. Instead dispose the current instance of {typeof(IvMtrFeedReader)} and open a new one.");
+        public void Reset() => throw new NotSupportedException($"This enumerator does not support resetting. Instead dispose the current instance of {typeof(ZigIvMtrFeedReader)} and open a new one.");
 
         public bool MoveNext()
         {

@@ -24,11 +24,6 @@ public class MailPhase
         return Name;
     }
 
-    public static implicit operator string(MailPhase source)
-    {
-        return source.ToString();
-    }
-
     public static explicit operator MailPhase(string phase)
     {
         if (Steps.TryGetValue(phase, out MailPhase? result))
@@ -36,6 +31,11 @@ public class MailPhase
             return result;
         }
         throw new InvalidCastException($"Unrecognized mail phase '{phase}'");
+    }
+
+    public static implicit operator string(MailPhase source)
+    {
+        return source.ToString();
     }
 
     public static bool operator ==(MailPhase a, MailPhase b)

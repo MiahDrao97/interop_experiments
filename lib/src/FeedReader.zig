@@ -12,14 +12,14 @@ const ascii = std.ascii;
 parent_allocator: Allocator,
 arena: *ArenaAllocator,
 open_square_bracket: bool = false,
-telemetry: Telemetry = .{},
+telemetry: Telemetry,
 prev_scan: ?Parsed(Scan) = null,
 // this belongs to the OS
 file_handle: *anyopaque,
 
 const FeedReader = @This();
 
-pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
+pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
     arena_ptr.* = .init(allocator);
 
@@ -27,6 +27,7 @@ pub fn new(allocator: Allocator, file: File) Allocator.Error!FeedReader {
         .parent_allocator = allocator,
         .arena = arena_ptr,
         .file_handle = file.handle,
+        .telemetry = .init(file_path),
     };
 }
 
@@ -79,6 +80,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                     return .eof;
                 },
                 else => {
+                    @branchHint(.cold);
                     log.err("Unexpected error while opening array: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
                     return .err(.failedToRead);
                 },
@@ -115,14 +117,16 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         if (byte == '[') {
             return;
         }
-        log.err("First non-whitespace character was not '['. Instead was: '{c}', line: {d}, pos: {d}", .{
+        log.err("First non-whitespace character was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
             byte,
+            self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
         });
         return error.InvalidFileFormat;
     } else |err| {
-        log.err("Encountered error opening array (line: {d}, pos: {d}): {s} -> {?}", .{
+        log.err("Encountered error opening array ('{s}', line: {d}, pos: {d}): {s} -> {?}", .{
+            self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
             @errorName(err),
@@ -140,8 +144,9 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     const reader: AnyReader = self.getFile().reader().any();
     while (reader.readByte()) |byte| {
         if (i >= buf.len) {
-            log.err("FATAL: Overflowed buffer of {d} bytes at line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
+            log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
                 buf.len,
+                self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
             });
@@ -180,12 +185,17 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
             open_brace = true;
         } else if (open_brace) {
             buf[i] = byte;
-            if (byte == '}') {
+            if (!inside_quotes and byte == '}') {
                 close_brace = true;
                 break;
             }
         } else {
-            log.err("Unexpected token '{c}': line {d}, pos {d}", .{ byte, self.telemetry.line, self.telemetry.pos });
+            log.err("Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
+                byte,
+                self.telemetry.file_path,
+                self.telemetry.line,
+                self.telemetry.pos,
+            });
             return error.InvalidFormat;
         }
     } else |err| {
@@ -193,8 +203,15 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
         switch (err) {
             error.EndOfStream => return null,
             else => {
-                log.err("Unepxected error: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-                unreachable;
+                @branchHint(.cold);
+                log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                    self.telemetry.file_path,
+                    self.telemetry.line,
+                    self.telemetry.pos,
+                    @errorName(err),
+                    @errorReturnTrace(),
+                });
+                return error.InvalidFormat;
             },
         }
     }
@@ -215,8 +232,17 @@ pub fn deinit(self: FeedReader) void {
 }
 
 const Telemetry = struct {
-    line: usize = 1,
-    pos: usize = 0,
+    line: usize,
+    pos: usize,
+    file_path: [:0]const u8,
+
+    pub fn init(file_path: [:0]const u8) Telemetry {
+        return .{
+            .file_path = file_path,
+            .line = 1,
+            .pos = 0,
+        };
+    }
 };
 
 const Scan = struct {
