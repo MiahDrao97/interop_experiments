@@ -33,7 +33,7 @@ pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_
 }
 
 pub fn nextScan(self: *FeedReader) ScanResult {
-    // the file is supposed to be a massive JSON file: an array of objects
+    // the file is supposed to be a massive JSON file; we care about the "events" field, which is an array of objects with depth 1
     if (self.open_events) {
         // parse JSON object: from '{' until '}'
         var buf: [4096]u8 = undefined;
@@ -347,6 +347,59 @@ fn FileStream(comptime buf_size: usize) type {
             defer self.cursor += 1;
 
             return self.read_buffer[@bitCast(self.cursor)];
+        }
+
+        // TODO : Implement these for better ergonomics
+
+        pub fn readUntil(self: *@This(), delimiter: []const u8, buf: []u8, telemetry: *Telemetry) ![]u8 {
+            _ = self.*;
+            _ = delimiter.ptr;
+            _ = buf.ptr;
+            _ = telemetry.*;
+            unreachable;
+        }
+
+        pub fn readUntilIgnore(self: *@This(), delimiter: []const u8, telemetry: *Telemetry) error{ EndOfStream, ReadError }!usize {
+            var idx: usize = 0;
+            var bytes_read: usize = 0;
+            while (self.nextByte()) |byte| {
+                if (byte) {
+                    var new_line: bool = false;
+                    defer {
+                        bytes_read += 1;
+                        if (!new_line) {
+                            telemetry.pos += 1;
+                        } else {
+                            telemetry.pos = 0;
+                            telemetry.line += 1;
+                        }
+                    }
+                    if (byte == '\n') {
+                        new_line = true;
+                    }
+                    if (idx < delimiter.len) {
+                        if (byte == delimiter[idx]) {
+                            idx += 1;
+                            // we have a match
+                            if (idx == delimiter.len) {
+                                return bytes_read;
+                            }
+                        } else {
+                            idx = 0;
+                        }
+                    }
+                }
+                return error.EndOfStream;
+            } else |err| {
+                log.err("Unexpected error at '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                    telemetry.file_path,
+                    telemetry.line,
+                    telemetry.pos,
+                    @errorName(err),
+                    @errorReturnTrace(),
+                });
+                return error.ReadError;
+            }
         }
 
         fn nextSegment(self: *@This()) !void {
