@@ -25,7 +25,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
 
     const file: File = std.fs.cwd().openFileZ(
         file_path,
-        File.OpenFlags{ .mode = .read_only, .allow_ctty = true, .lock = .exclusive },
+        File.OpenFlags{ .mode = .read_only, .allow_ctty = true, .lock = .shared },
     ) catch |err| {
         log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
         return .failedToOpen;

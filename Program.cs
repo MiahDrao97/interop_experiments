@@ -17,38 +17,87 @@ internal static class Program
             count = parsedCount;
         }
 
-        Stopwatch sw = Stopwatch.StartNew();
-        using ZigIvMtrFeedReader reader = ZigIvMtrFeedReader.OpenFile(args[0]);
-        Console.WriteLine($"Opened reader in {sw.ElapsedMilliseconds}ms");
-
-        int idx = 0;
-        long elapsedMs = sw.ElapsedMilliseconds;
-        try
+        Stopwatch zigStopwatch = Stopwatch.StartNew();
+        long zigOpenTimeMs;
+        long zigElapsedMs;
+        double zigAvg;
+        int zidx = 0;
+        using ZigIvMtrFeedReader zigReader = ZigIvMtrFeedReader.OpenFile(args[0]);
         {
-            if (count != 0)
+            zigOpenTimeMs = zigStopwatch.ElapsedMilliseconds;
+
+            zigElapsedMs = zigStopwatch.ElapsedMilliseconds;
+            try
             {
-                sw.Restart();
-                foreach (ScanResult scan in reader)
+                if (count != 0)
                 {
-                    Console.WriteLine($"Read scan[{idx}] in {sw.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
-                    idx++;
-                    if (count.HasValue)
+                    zigStopwatch.Restart();
+                    foreach (ScanResult scan in zigReader)
                     {
-                        if (idx >= count)
+                        Console.WriteLine($"Read scan[{zidx}] in {zigStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                        zidx++;
+                        if (count.HasValue)
                         {
-                            break;
+                            if (zidx >= count)
+                            {
+                                break;
+                            }
                         }
+                        zigElapsedMs += zigStopwatch.ElapsedMilliseconds;
+                        zigStopwatch.Restart();
                     }
-                    elapsedMs += sw.ElapsedMilliseconds;
-                    sw.Restart();
                 }
             }
+            finally
+            {
+                zigAvg = zigElapsedMs / (zidx == 0 ? 1 : zidx);
+            }
         }
-        finally
+
+        Thread.Sleep(1000);
+
+        Stopwatch csharpStopwatch = Stopwatch.StartNew();
+        long csOpenTimeMs;
+        long csElapsedMs;
+        double csAvg;
+        int csidx = 0;
+        using CsharpIvMtrFeeder csharpReader = CsharpIvMtrFeeder.OpenFile(args[0]);
         {
-            double avg = elapsedMs / (idx == 0 ? 1 : idx);
-            Console.WriteLine($"Total time: {elapsedMs}ms. Processed: {idx} Avg processing time: {avg}ms");
+            csOpenTimeMs = csharpStopwatch.ElapsedMilliseconds;
+
+            csElapsedMs = csharpStopwatch.ElapsedMilliseconds;
+            try
+            {
+                if (count != 0)
+                {
+                    zigStopwatch.Restart();
+                    foreach (ScanResult scan in csharpReader)
+                    {
+                        Console.WriteLine($"Read scan[{csidx}] in {csharpStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                        csidx++;
+                        if (count.HasValue)
+                        {
+                            if (csidx >= count)
+                            {
+                                break;
+                            }
+                        }
+                        csElapsedMs += csharpStopwatch.ElapsedMilliseconds;
+                        csharpStopwatch.Restart();
+                    }
+                }
+            }
+            finally
+            {
+                csAvg = csElapsedMs / (csidx == 0 ? 1 : csidx);
+            }
         }
+
+        Console.WriteLine("------------------------------------------------------------------------------------");
+        Console.WriteLine($"Opened zig reader in {zigOpenTimeMs}ms");
+        Console.WriteLine($"Zig total time: {zigElapsedMs}ms. Processed: {zidx} Avg processing time: {zigAvg}ms");
+        Console.WriteLine($"Opened C# reader in {csOpenTimeMs}ms");
+        Console.WriteLine($"C# total time: {csElapsedMs}ms. Processed: {csidx} Avg processing time: {csAvg}ms");
     }
 }
 

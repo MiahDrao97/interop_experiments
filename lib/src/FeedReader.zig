@@ -13,7 +13,6 @@ parent_allocator: Allocator,
 arena: *ArenaAllocator,
 open_square_bracket: bool = false,
 telemetry: Telemetry,
-prev_scan: ?Parsed(Scan) = null,
 // this belongs to the OS
 file_handle: *anyopaque,
 
@@ -32,11 +31,6 @@ pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8) Allocator.
 }
 
 pub fn nextScan(self: *FeedReader) ScanResult {
-    // check for a previous scan and free that memory
-    if (self.prev_scan) |prev| {
-        prev.deinit();
-    }
-
     // the file is supposed to be a massive JSON file: an array of objects
     if (self.open_square_bracket) {
         // parse JSON object: from '{' until '}'
@@ -48,13 +42,11 @@ pub fn nextScan(self: *FeedReader) ScanResult {
 
         log.debug("\nParsed object: '{s}'", .{slice});
 
-        const parsed: Parsed(Scan) = json.parseFromSlice(
+        const parsed: Scan = json.parseFromSliceLeaky(
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
-            // Alloc always means that strings will be copied and heap allocated for our parsed scan.
-            // Since our slice is on the stack, wd'd return a dangling pointer otherwise.
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| {
             switch (err) {
                 error.Overflow => return .err(.outOfMemory),
@@ -68,9 +60,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                 },
             }
         };
-        // assign to previous
-        self.prev_scan = parsed;
-        return .ok(parsed.value);
+        return .ok(parsed);
     } else {
         // read the square bracket first
         self.openArray() catch |err| {
@@ -226,7 +216,9 @@ pub fn deinit(self: FeedReader) void {
     const parent_allocator: Allocator = self.parent_allocator;
     const arena_ptr: *ArenaAllocator = self.arena;
 
-    self.getFile().close();
+    const file: File = self.getFile();
+    file.unlock();
+    file.close();
     self.arena.deinit();
     parent_allocator.destroy(arena_ptr);
 }
