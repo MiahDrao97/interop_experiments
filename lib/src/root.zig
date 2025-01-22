@@ -83,9 +83,12 @@ test "success case" {
     testing.log_level = .debug;
 
     const result: NewReaderResult = open("test_feed.json");
-    try testing.expectEqual(.opened, result);
-    defer close();
+    defer {
+        close();
+        log.debug("We closed here!", .{});
+    }
 
+    try testing.expectEqual(.opened, result);
     try testing.expect(reader != null);
 
     var scanResult: ScanResult = nextScan();

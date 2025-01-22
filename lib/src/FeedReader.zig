@@ -24,6 +24,9 @@ telemetry: Telemetry,
 /// The file stream we're reading from
 file_stream: FileStream(8192),
 
+/// global buffer, since we're dipping into this with every `nextScan()` call
+threadlocal var global_buf: [4096]u8 = undefined;
+
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
 
@@ -49,8 +52,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
     // the file is supposed to be a massive JSON file; we care about the "events" field, which is an array of objects with depth 1
     if (self.open_events) {
         // parse JSON object: from '{' until '}'
-        var buf: [4096]u8 = undefined;
-        const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
+        const slice: []const u8 = self.parseNextObject(&global_buf) catch |err| {
             log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
             return .err(.failedToRead);
         } orelse return .eof;
@@ -62,8 +64,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             Scan,
             self.arena.allocator(),
             slice,
-            // `alloc_always` copies the string values and heap-allocates them as opposed to returning pointers to our buffer (which will be destroyed on return)
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| switch (err) {
             error.OutOfMemory => {
                 @branchHint(.cold);
@@ -81,24 +82,26 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         return .ok(parsed);
     } else {
         // we only care about the "events" field
-        self.openEvents() catch |err| {
-            switch (err) {
-                error.EndOfStream => {
-                    log.warn("Read until end of stream. Presumably an empty file ('{s}', line {d}, pos {d}) -> {?}", .{
-                        self.telemetry.file_path,
-                        self.telemetry.line,
-                        self.telemetry.pos,
-                        @errorReturnTrace(),
-                    });
-                    return .eof;
-                },
-                else => {
-                    // branch hint to indicate this control path should not be optimized - we don't expect to hit it
-                    @branchHint(.cold);
-                    log.err("Unexpected error while opening array: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-                    return .err(.failedToRead);
-                },
-            }
+        self.openEvents() catch |err| switch (err) {
+            error.EndOfStream => {
+                log.warn("Read until end of stream. The \"events\" field was not found ('{s}', line {d}, pos {d}) -> {?}", .{
+                    self.telemetry.file_path,
+                    self.telemetry.line,
+                    self.telemetry.pos,
+                    @errorReturnTrace(),
+                });
+                return .eof;
+            },
+            else => {
+                log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                    self.telemetry.file_path,
+                    self.telemetry.line,
+                    self.telemetry.pos,
+                    @errorName(err),
+                    @errorReturnTrace(),
+                });
+                return .err(.failedToRead);
+            },
         };
         // great, we're in the "events" field and past opening square bracket, so we'll denote that
         self.open_events = true;
@@ -461,7 +464,7 @@ const Scan = struct {
 
 /// Status of reading our scan that will be passed through our exported function
 pub const ReadScanStatus = enum(i32) {
-    /// Successfully readc
+    /// Successfully read scan
     success = 0,
     /// No reader is currently active
     noActiveReader = 1,
