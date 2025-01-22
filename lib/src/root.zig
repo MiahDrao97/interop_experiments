@@ -9,11 +9,17 @@ const FeedReader = @import("FeedReader.zig");
 const ScanResult = FeedReader.ScanResult;
 const ReadScanStatus = FeedReader.ReadScanStatus;
 
+/// Static reader that is unique to each thread
 threadlocal var reader: ?FeedReader = null;
+
+/// The global allocator we're using
 var gpa: GeneralPurposeAllocator(.{}) = .init;
+
+/// I exposed this global so that it can set in unit testing to detect memory leaks
 var alloc: Allocator = gpa.allocator();
 
-/// Open a file from the USPS feeder, returning a status code for the operation
+/// Open a file from the USPS feeder, returning a status code for the operation.
+///     `file_path` is a null-terminated string.
 export fn open(file_path: [*:0]const u8) NewReaderResult {
     if (reader) |_| {
         // reader is already active on another file
@@ -30,6 +36,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     };
 
     reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
+        // these branch hints tell the compiler not to optimize for this control flow
         @branchHint(.cold);
         switch (err) {
             Allocator.Error.OutOfMemory => {
@@ -42,6 +49,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     return .opened;
 }
 
+/// Get the next scan, EOF, or an error if we cannot read it.
 export fn nextScan() ScanResult {
     if (reader) |*current_reader| {
         return current_reader.nextScan();
@@ -49,6 +57,7 @@ export fn nextScan() ScanResult {
     return .err(.noActiveReader);
 }
 
+/// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
     if (reader) |current_reader| {
         current_reader.deinit();
@@ -56,10 +65,15 @@ export fn close() void {
     }
 }
 
+/// Reader result from opening a new reader
 pub const NewReaderResult = enum(i32) {
+    /// Successfully opened
     opened = 0,
+    /// Failed to open, likely because the OS would not let us open this file
     failedToOpen = 1,
+    /// There is already an open reader on this thread
     conflict = 2,
+    /// Out of memory to allocate
     outOfMemory = 3,
 };
 
@@ -78,15 +92,15 @@ test "success case" {
     try testing.expectEqual(.success, scanResult.status);
     try testing.expect(scanResult.imb != null);
     try testing.expect(scanResult.mailPhase != null);
-    try testing.expectEqualStrings("4537457458800947547708425641125", scanResult.imb.?[0..31]);
-    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", scanResult.mailPhase.?[0..50]);
+    try testing.expectEqualStrings("4537457458800947547708425641125", mem.sliceTo(scanResult.imb.?, 0));
+    try testing.expectEqualStrings("Phase 3c - Destination Sequenced Carrier Sortation", mem.sliceTo(scanResult.mailPhase.?, 0));
 
     scanResult = nextScan();
     try testing.expectEqual(.success, scanResult.status);
     try testing.expect(scanResult.imb != null);
     try testing.expect(scanResult.mailPhase != null);
-    try testing.expectEqualStrings("6899000795822123340248082958957", scanResult.imb.?[0..31]);
-    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", scanResult.mailPhase.?[0..51]);
+    try testing.expectEqualStrings("6899000795822123340248082958957", mem.sliceTo(scanResult.imb.?, 0));
+    try testing.expectEqualStrings("Phase 0 - Origin Processing Cancellation of Postage", mem.sliceTo(scanResult.mailPhase.?, 0));
 
     scanResult = nextScan();
     try testing.expectEqual(.eof, scanResult.status);

@@ -23,6 +23,7 @@ pub fn build(b: *Build) void {
 
     // .dll output
     const lib: *Compile = b.addSharedLibrary(.{
+        // this is the name of our dll file (minus the file extension)
         .name = "zig_lib",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.

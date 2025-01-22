@@ -34,7 +34,7 @@ internal static class Program
                     zigStopwatch.Restart();
                     foreach (ScanResult scan in zigReader)
                     {
-                        Console.WriteLine($"Read scan[{zidx}] in {zigStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                        Console.WriteLine($"Read scan[{zidx}] in {zigStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase.Name}");
                         zidx++;
                         if (count.HasValue)
                         {
@@ -73,7 +73,7 @@ internal static class Program
                     zigStopwatch.Restart();
                     foreach (ScanResult scan in csharpReader)
                     {
-                        Console.WriteLine($"Read scan[{csidx}] in {csharpStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase}");
+                        Console.WriteLine($"Read scan[{csidx}] in {csharpStopwatch.ElapsedMilliseconds}ms. IMB: {scan.Imb}, MailPhase: {scan.MailPhase.Name}");
                         csidx++;
                         if (count.HasValue)
                         {

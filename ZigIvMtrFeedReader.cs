@@ -4,6 +4,7 @@ using System.Text;
 
 namespace InteropExperiments;
 
+/// <inheritdoc cref="IIvMtrFeedReader" />
 public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
 {
     private bool _enumeratorOpened;
@@ -16,6 +17,9 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
         LibBindings.CloseReader();
     }
 
+    /// <summary>
+    /// Open an IV-MTR feed file
+    /// </summary>
     public static ZigIvMtrFeedReader OpenFile(string filePath, bool terminateOpenReader = false)
     {
         LibBindings.NewReaderResult result = LibBindings.OpenReader(filePath);
@@ -38,6 +42,7 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
         return new ZigIvMtrFeedReader();
     }
 
+    /// <inheritdoc />
     public IEnumerator<ScanResult> GetEnumerator()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -49,8 +54,12 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
         return new Enumerator();
     }
 
+    /// <inheritdoc />
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
+    /// <summary>
+    /// Frees unmanaged memory
+    /// </summary>
     public void Dispose()
     {
         _disposed = true;
@@ -60,12 +69,16 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
 
     private struct Enumerator : IEnumerator<ScanResult>
     {
+        /// <inheritdoc />
         public ScanResult Current { get; private set; }
 
+        /// <inheritdoc />
         readonly object IEnumerator.Current => Current;
 
+        /// <inheritdoc />
         public void Reset() => throw new NotSupportedException($"This enumerator does not support resetting. Instead dispose the current instance of {typeof(ZigIvMtrFeedReader)} and open a new one.");
 
+        /// <inheritdoc />
         public bool MoveNext()
         {
             if (LibBindings.Next() is ScanResult scan)
@@ -76,45 +89,117 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
             return false;
         }
 
+        /// <inheritdoc />
         public readonly void Dispose() { }
     }
 }
 
+/// <summary>
+/// Lib bindings for `zig_lib.dll`
+/// </summary>
 internal static partial class LibBindings
 {
-    [LibraryImport("zig_lib.dll", EntryPoint = "open")]
+    // be OS-aware: we develop on Windows machines, but staging/prod are on Linux machines
+#if WINDOWS
+    private const string _libFile = "zig_lib.dll";
+#else
+    // Linux dynamic library file extension
+    private const string _libFile = "zig_lib.so";
+#endif
+
+    [LibraryImport(_libFile, EntryPoint = "open")]
     private static partial int Open(IntPtr fileName);
 
-    [LibraryImport("zig_lib.dll", EntryPoint = "close")]
+    [LibraryImport(_libFile, EntryPoint = "close")]
     private static partial void Close();
 
-    [LibraryImport("zig_lib.dll", EntryPoint = "nextScan")]
+    [LibraryImport(_libFile, EntryPoint = "nextScan")]
     private static partial ScanResultUnmanaged NextScan();
 
+    /// <summary>
+    /// Represents the status code when opening a new reader
+    /// </summary>
     public enum NewReaderResult
     {
+        /// <summary>
+        /// Successfully opened
+        /// </summary>
         Opened = 0,
+
+        /// <summary>
+        /// Failed to open (check console logs for more specifics: this could be due to the OS preventing the file being read)
+        /// </summary>
         FailedToOpen = 1,
+
+        /// <summary>
+        /// There is already an open reader on this thread
+        /// </summary>
         Conflict = 2,
+
+        /// <summary>
+        /// The reader ran out of memory (detrimental error if this ever happens)
+        /// </summary>
         OutOfMemory = 3
     }
 
+    /// <summary>
+    /// Represents the status code when reading the next scan from the feed
+    /// </summary>
     public enum ReadResult
     {
+        /// <summary>
+        /// Successfully read the next scan
+        /// </summary>
         Success = 0,
+
+        /// <summary>
+        /// No reader is open
+        /// </summary>
         NoActiveReader = 1,
+
+        /// <summary>
+        /// Failed to read: this would be due to the contents of the file not matching expectations.
+        /// This would very likely be a bug in the unmanaged code, so definitely check the console logs for what caused this error.
+        /// </summary>
         FailedToRead = 2,
+
+        /// <summary>
+        /// The reader ran out of memory (detrimental error if this ever happens)
+        /// </summary>
         OutOfMemory = 3,
+
+        /// <summary>
+        /// End of file (not an error, but we use this code to mark the end of the file feed)
+        /// </summary>
         Eof = -1
     }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ScanResultUnmanaged
     {
+        /// <summary>
+        /// Status, matching <see cref="ReadResult"/>
+        /// </summary>
         public int status;
 
+        /// <summary>
+        /// IMB parsed from the feed file. Should be marshalled as an ANSI string.
+        /// </summary>
+        /// <remarks>
+        /// WARNING : The value will be 0 if the <see cref="status"/> is anything other than <see cref="ReadResult.Success"/>.
+        /// This indicates that this is pointing to address 0, which is NULL.
+        ///
+        /// </remarks>
         public IntPtr imb;
 
+        /// <summary>
+        /// Mail phase parsed from the feed file. Should be marshalled as an ANSI string.
+        /// </summary>
+        /// <remarks>
+        /// WARNING : The value will be 0 if the <see cref="status"/> is anything other than <see cref="ReadResult.Success"/>.
+        /// This indicates that this is pointing to address 0, which is NULL.
+        ///
+        /// </remarks>
         public IntPtr mailPhase;
 
         public override readonly string ToString()
@@ -123,6 +208,9 @@ internal static partial class LibBindings
         }
     }
 
+    /// <summary>
+    /// Open the underlying reader
+    /// </summary>
     public static NewReaderResult OpenReader(string fileName)
     {
         unsafe
@@ -135,8 +223,14 @@ internal static partial class LibBindings
         }
     }
 
+    /// <summary>
+    /// Close the underlying reader and free unmanaged resources
+    /// </summary>
     public static void CloseReader() => Close();
 
+    /// <summary>
+    /// Get the next scan result or null if end of file.
+    /// </summary>
     public static ScanResult? Next()
     {
         ScanResultUnmanaged scan = NextScan();

@@ -4,6 +4,7 @@ using Newtonsoft.Json;
 
 namespace InteropExperiments;
 
+/// <inheritdoc />
 public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
 {
     private readonly FileStream _fileStream;
@@ -19,27 +20,33 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
         _fileStream.Close();
     }
 
+    /// <summary>
+    /// Open a file to begin streaming the IV-MTR feed
+    /// </summary>
     public static CsharpIvMtrFeeder OpenFile(string filePath)
     {
         return new(File.OpenRead(filePath));
     }
 
+    /// <inheritdoc />
     public IEnumerator<ScanResult> GetEnumerator()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return new Enumerator(_fileStream);
     }
 
+    /// <inheritdoc />
     IEnumerator IEnumerable.GetEnumerator()
     {
         return GetEnumerator();
     }
 
+    /// <inheritdoc />
     public void Dispose()
     {
+        _disposed = true;
         _fileStream.Dispose();
         GC.SuppressFinalize(this);
-        _disposed = true;
     }
 
     private struct Enumerator(FileStream fileStream) : IEnumerator<ScanResult>
@@ -47,6 +54,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
         private readonly FileStream _stream = fileStream;
         private bool _openEvents;
 
+        /// <inheritdoc />
         public bool MoveNext()
         {
             if (GetNext() is ScanResult scan)
@@ -57,12 +65,16 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
             return false;
         }
 
+        /// <inheritdoc />
         public ScanResult Current { get; private set; } = null!;
 
+        /// <inheritdoc />
         readonly object IEnumerator.Current => Current;
 
+        /// <inheritdoc />
         public readonly void Dispose() { }
 
+        /// <inheritdoc />
         public void Reset()
         {
             throw new NotSupportedException($"Resetting is not supported. Instead dispose the current instance of {nameof(CsharpIvMtrFeeder)} and open a new file.");
@@ -70,6 +82,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
 
         private ScanResult? GetNext()
         {
+            // same logic as the Zig side
             if (!_openEvents)
             {
                 return OpenEvents();
@@ -82,12 +95,19 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
 
         private ScanResult? OpenEvents()
         {
+            // spans are stack-allocated
             ReadOnlySpan<char> eventsKey = "events";
+
             bool insideQuotes = false;
             bool insideEvents = false;
             int i = 0;
             while (true)
             {
+                // We do a lot of sketchy type-casting here:
+                // Reason-being is that the stream is returning bytes that are widened into 32-bit signed integers.
+                // However, this makes the potentially deadly mistake of assuming ASCII-encoding and will not handle special unicode characters.
+                // But it is a data feed from USPS, so... might not happen.
+
                 int nextByte = _stream.ReadByte();
                 if (nextByte < 1)
                 {
@@ -133,6 +153,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
         {
             while (true)
             {
+                // more sketchy type-casting...
                 int nextByte = _stream.ReadByte();
                 if ((char)nextByte == '[')
                 {
@@ -160,6 +181,10 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
 
         private readonly ScanResult? ParseObject()
         {
+            // This is C#'s way of creating arrays on the stack.
+            // Honestly, we should do this kind of thing more.
+            // The perf benefits of stack-allocating a buffer for reading/writing can be *insane*.
+            // Caveat: You can only do this with unmanaged types (i.e. value types whose fields are all other value/unmanaged types).
             Span<byte> buf = stackalloc byte[4096];
 
             bool insideQuotes = false;
@@ -168,6 +193,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
             int i = 0;
             while (i < 4096)
             {
+                // more sketchy type-casting
                 int nextByte = _stream.ReadByte();
                 if (nextByte < 1)
                 {
@@ -210,6 +236,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
                 else
                 {
                     buf[i] = (byte)nextByte;
+                    // aaaand we'll just pretend that we've been UTF-8 all along
                     string parsed = Encoding.UTF8.GetString(buf);
                     throw new InvalidOperationException($"Invalid object encountered: '{parsed}'");
                 }

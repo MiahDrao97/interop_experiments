@@ -1,3 +1,4 @@
+//! This structure represents the reader that does the actual parser of the feed file.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -12,14 +13,25 @@ const windows = std.os.windows;
 const posix = std.posix;
 const fd_t = posix.fd_t;
 
+/// Parent allocator that is the underlying allocation source for the arena
 parent_allocator: Allocator,
+/// Arena allocator used to parse each JSON object
 arena: *ArenaAllocator,
+/// Indicates that we've parsed the "events" field and are parsing the JSON objects in that array
 open_events: bool = false,
+/// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
-file_stream: FileStream(6000),
+/// The file stream we're reading from
+file_stream: FileStream(8192),
 
+/// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
 
+/// Open a new `FeedReader`
+///     `allocator` - used to back the arena
+///     `file` - contains the file handler that we'll use for the file stream
+///     `file_path` - path to the file we've opened
+///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
 pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) Allocator.Error!FeedReader {
     const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
     arena_ptr.* = .init(allocator);
@@ -32,6 +44,7 @@ pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_
     };
 }
 
+/// Get the next scan result
 pub fn nextScan(self: *FeedReader) ScanResult {
     // the file is supposed to be a massive JSON file; we care about the "events" field, which is an array of objects with depth 1
     if (self.open_events) {
@@ -44,6 +57,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
 
         log.debug("\nParsed object: '{s}'", .{slice});
 
+        // we're using an arena, so all the allocations will get destroyed when our arena dies
         const parsed: Scan = json.parseFromSliceLeaky(
             Scan,
             self.arena.allocator(),
@@ -51,7 +65,10 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| {
             switch (err) {
-                error.Overflow => return .err(.outOfMemory),
+                error.OutOfMemory => {
+                    @branchHint(.cold);
+                    return .err(.outOfMemory);
+                },
                 else => {
                     log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
                         @errorName(err),
@@ -77,6 +94,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                     return .eof;
                 },
                 else => {
+                    // branch hint to indicate this control path should not be optimized - we don't expect to hit it
                     @branchHint(.cold);
                     log.err("Unexpected error while opening array: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
                     return .err(.failedToRead);
@@ -89,6 +107,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
     }
 }
 
+/// Parse until the "events" field
 fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
     const key: []const u8 = "events";
     var inside_quotes: bool = false;
@@ -120,13 +139,12 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         }
 
         if (inside_quotes) {
-            log.debug("Byte inside quotes: {c}", .{byte.?});
             if (idx < key.len) {
                 if (byte == key[idx]) {
                     idx += 1;
                     if (idx == key.len) {
                         inside_events = true;
-                        log.debug("Found events field '{s}', line {d}, pos {d}", .{
+                        log.debug("Found \"events\" field at '{s}', line {d}, pos {d}", .{
                             self.telemetry.file_path,
                             self.telemetry.line,
                             self.telemetry.pos,
@@ -140,6 +158,8 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
             idx = 0;
         }
 
+        // ok, we've found the "events" field, we're outside the quotes, and we're on the colon character:
+        // it has to be the opening of the array next
         if (!inside_quotes and inside_events and byte == ':') {
             try self.openArray();
             return;
@@ -156,8 +176,8 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
     }
 }
 
+/// Parse until the open square brack ('['). After this, we'll be ready to start parsing objects out of the array.
 fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    // first read: read everything to avoid a bunch of sys calls
     while (self.file_stream.nextByte()) |byte| {
         if (byte == null) {
             return error.EndOfStream;
@@ -200,6 +220,7 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
     }
 }
 
+/// Parse next JSON object in our file stream, outputting the bytes read to `buf`
 fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated, BufferOverflow }!?[]const u8 {
     var open_brace: bool = false;
     var close_brace: bool = false;
@@ -297,6 +318,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     return buf[0..i];
 }
 
+/// Destroys the arena and all memory it allocated. Also closes the file stream.
 pub fn deinit(self: FeedReader) void {
     const parent_allocator: Allocator = self.parent_allocator;
     const arena_ptr: *ArenaAllocator = self.arena;
@@ -306,6 +328,7 @@ pub fn deinit(self: FeedReader) void {
     parent_allocator.destroy(arena_ptr);
 }
 
+/// Tracks basic data about where we are in the open file
 const Telemetry = struct {
     line: usize,
     pos: usize,
@@ -320,15 +343,26 @@ const Telemetry = struct {
     }
 };
 
+/// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
+/// This prevents having to call the OS's read file function more than a few times.
 fn FileStream(comptime buf_size: usize) type {
     return struct {
+        /// Owned by the OS; underlying type varies on each platform
         file_handle: fd_t,
+        /// If true, we'll need to unlock the file when we close the stream
         file_locked: bool,
+        /// Buffer that holds the chunk
         buf: [buf_size]u8 = [_]u8{0} ** buf_size,
+        /// Slice of `buf` that we can extract bytes from
         read_buffer: []u8 = undefined,
+        /// Cursor on the `read_buffer`.
+        /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
         cursor: isize = -1,
+        /// If true, we've encountered the end of the file.
+        /// Once the `cursor` reaches the length of the `read_buffer`, we've streamed the whole file.
         eof: bool = false,
 
+        /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
         pub fn init(file: File, with_file_lock: bool) @This() {
             return .{
                 .file_handle = file.handle,
@@ -336,6 +370,7 @@ fn FileStream(comptime buf_size: usize) type {
             };
         }
 
+        /// Stream the next byte or `null` if EOF
         pub fn nextByte(self: *@This()) !?u8 {
             if (self.cursor < 0 or self.cursor == self.read_buffer.len) {
                 if (self.eof) {
@@ -349,17 +384,8 @@ fn FileStream(comptime buf_size: usize) type {
             return self.read_buffer[@bitCast(self.cursor)];
         }
 
-        // TODO : Implement these for better ergonomics
-
-        pub fn readUntil(self: *@This(), delimiter: []const u8, buf: []u8, telemetry: *Telemetry) ![]u8 {
-            _ = self.*;
-            _ = delimiter.ptr;
-            _ = buf.ptr;
-            _ = telemetry.*;
-            unreachable;
-        }
-
-        pub fn readUntilIgnore(self: *@This(), delimiter: []const u8, telemetry: *Telemetry) error{ EndOfStream, ReadError }!usize {
+        // TODO : Do we need this? The idea behind this function is to get around non-ASCII encoding and to clean up the parsing code above.
+        pub fn scanUntil(self: *@This(), delimiter: []const u8, telemetry: *Telemetry) error{ EndOfStream, ReadError }!?usize {
             var idx: usize = 0;
             var bytes_read: usize = 0;
             while (self.nextByte()) |byte| {
@@ -374,15 +400,17 @@ fn FileStream(comptime buf_size: usize) type {
                             telemetry.line += 1;
                         }
                     }
+
                     if (byte == '\n') {
                         new_line = true;
                     }
+
                     if (idx < delimiter.len) {
                         if (byte == delimiter[idx]) {
                             idx += 1;
                             // we have a match
                             if (idx == delimiter.len) {
-                                return bytes_read;
+                                return bytes_read - 1;
                             }
                         } else {
                             idx = 0;
@@ -400,8 +428,10 @@ fn FileStream(comptime buf_size: usize) type {
                 });
                 return error.ReadError;
             }
+            return null;
         }
 
+        /// Loads the next chunk of the file into `buf` and resets the `cursor` to 0.
         fn nextSegment(self: *@This()) !void {
             const file: File = .{ .handle = self.file_handle };
             const reader: AnyReader = file.reader().any();
@@ -413,6 +443,7 @@ fn FileStream(comptime buf_size: usize) type {
             self.read_buffer = self.buf[0..bytes_read];
         }
 
+        /// Close the file and unlock it if `file_locked`
         pub fn close(self: @This()) void {
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
@@ -423,24 +454,38 @@ fn FileStream(comptime buf_size: usize) type {
     };
 }
 
+/// Represents the JSON fields we care about
 const Scan = struct {
     imb: ?[:0]const u8,
     mailPhase: ?[:0]const u8,
 };
 
+/// Status of reading our scan that will be passed through our exported function
 pub const ReadScanStatus = enum(i32) {
+    /// Successfully readc
     success = 0,
+    /// No reader is currently active
     noActiveReader = 1,
+    /// Failed to read the file, likely because its contents did not follow the expected format.
+    /// If this error is returned, it is quite possibly a bug.
+    /// Definitely check the console logs when this happens.
     failedToRead = 2,
+    /// Reader is out of memory - extremely unlikely and would be a catastrophic failure
     outOfMemory = 3,
+    /// End of file (not an error, but simply indicates that the feed file was completely read and the reader should be closed)
     eof = -1,
 };
 
+/// Structure holding the `ReadScanStatus` for the overall success of this operation as well as fields from the scan in the success case.
 pub const ScanResult = extern struct {
+    /// Status for reading this scan
     status: ReadScanStatus,
+    /// IMB code for this scan (can be null, but shouldn't be in success cases)
     imb: ?[*:0]const u8,
+    /// Mail phase for this scan (can be null, but shouldn't be in success cases)
     mailPhase: ?[*:0]const u8,
 
+    /// Ok result: pass in the parsed `Scan` object with the fields that we care about
     pub fn ok(scan: Scan) ScanResult {
         return .{
             .status = .success,
@@ -449,6 +494,7 @@ pub const ScanResult = extern struct {
         };
     }
 
+    /// Error result: pass in the appropiate status for the failure
     pub fn err(status: ReadScanStatus) ScanResult {
         return .{
             .status = status,
@@ -457,6 +503,7 @@ pub const ScanResult = extern struct {
         };
     }
 
+    /// End of file result
     pub const eof: ScanResult = .{
         .status = .eof,
         .imb = null,
