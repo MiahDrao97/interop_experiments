@@ -15,11 +15,6 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
         _fileStream = file;
     }
 
-    ~CsharpIvMtrFeeder()
-    {
-        _fileStream.Close();
-    }
-
     /// <summary>
     /// Open a file to begin streaming the IV-MTR feed
     /// </summary>

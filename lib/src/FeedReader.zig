@@ -63,21 +63,19 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             self.arena.allocator(),
             slice,
             ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
-        ) catch |err| {
-            switch (err) {
-                error.OutOfMemory => {
-                    @branchHint(.cold);
-                    return .err(.outOfMemory);
-                },
-                else => {
-                    log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
-                        @errorName(err),
-                        @errorReturnTrace(),
-                        slice,
-                    });
-                    return .err(.failedToRead);
-                },
-            }
+        ) catch |err| switch (err) {
+            error.OutOfMemory => {
+                @branchHint(.cold);
+                return .err(.outOfMemory);
+            },
+            else => {
+                log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
+                    @errorName(err),
+                    @errorReturnTrace(),
+                    slice,
+                });
+                return .err(.failedToRead);
+            },
         };
         return .ok(parsed);
     } else {

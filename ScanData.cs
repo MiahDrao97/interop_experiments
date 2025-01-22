@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace InteropExperiments;
 
 public class ScanResult
@@ -26,6 +28,17 @@ public class MailPhase
     public override string ToString()
     {
         return Name;
+    }
+
+    public static bool TryFrom(string phaseName, [NotNullWhen(true)] out MailPhase? phase)
+    {
+        phase = null;
+        if (Steps.TryGetValue(phaseName, out float value))
+        {
+            phase = new(value, phaseName);
+            return true;
+        }
+        return false;
     }
 
     public static explicit operator MailPhase(string phase)
