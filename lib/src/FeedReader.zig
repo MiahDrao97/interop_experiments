@@ -62,7 +62,8 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
+            // `alloc_always` copies the string values and heap-allocates them as opposed to returning pointers to our buffer (which will be destroyed on return)
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         ) catch |err| switch (err) {
             error.OutOfMemory => {
                 @branchHint(.cold);
