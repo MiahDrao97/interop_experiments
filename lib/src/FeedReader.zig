@@ -445,7 +445,7 @@ fn FileStream(comptime buf_size: usize) type {
             try self.beginNext(self.loading);
         }
 
-        /// Loads the next chunk of the file into `buf` and resets the `cursor` to 0.
+        /// Loads the next chunk of the file into the buffer that matches `load_buf`
         fn nextSegment(self: *@This(), load_buf: bufId) !void {
             self.load_mutex.lock();
             errdefer |err| self.read_error = err;
@@ -471,6 +471,7 @@ fn FileStream(comptime buf_size: usize) type {
             const bytes_read: usize = try reader.readAtLeast(to_load, buf_size);
             if (bytes_read < buf_size) {
                 self.eof = true;
+                // this accounts for the unlikely scenario of the file being exactly our buffer size at the end
                 self.on_final = bytes_read == 0;
             }
             self.next_len = bytes_read;

@@ -20,6 +20,7 @@ public sealed class CsharpIvMtrFeeder : IIvMtrFeedReader
     /// </summary>
     public static CsharpIvMtrFeeder OpenFile(string filePath)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
         return new(File.OpenRead(filePath));
     }
 

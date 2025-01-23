@@ -1,6 +1,4 @@
-﻿using System.Diagnostics;
-
-namespace InteropExperiments;
+﻿namespace InteropExperiments;
 
 internal static class Program
 {
@@ -11,6 +9,7 @@ internal static class Program
             throw new InvalidOperationException("Missing 1 required argument: A file path to a json-formatted IV MTR feed.");
         }
 
+#if SIMPLE_CLI_TESTING
         int? count = null;
         if (args.Length == 3 && args[1] == "--count" && int.TryParse(args[2], out int parsedCount))
         {
@@ -98,6 +97,7 @@ internal static class Program
         Console.WriteLine($"C# total time: {csElapsedMs}ms. Processed: {csidx} Avg processing time: {csAvg}ms");
         Console.WriteLine($"Opened zig reader in {zigOpenTimeMs}ms");
         Console.WriteLine($"Zig total time: {zigElapsedMs}ms. Processed: {zidx} Avg processing time: {zigAvg}ms");
+#endif
     }
 }
 

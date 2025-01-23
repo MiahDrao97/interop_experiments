@@ -23,6 +23,8 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
     /// </summary>
     public static ZigIvMtrFeedReader OpenFile(string filePath, bool terminateOpenReader = false)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
         LibBindings.NewReaderResult result = LibBindings.OpenReader(filePath);
         switch (result)
         {
