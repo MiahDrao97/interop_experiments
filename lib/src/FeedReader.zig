@@ -12,11 +12,12 @@ const ascii = std.ascii;
 const windows = std.os.windows;
 const posix = std.posix;
 const fd_t = posix.fd_t;
+const Thread = std.Thread;
+const Mutex = Thread.Mutex;
+const assert = std.debug.assert;
 
-/// Parent allocator that is the underlying allocation source for the arena
-parent_allocator: Allocator,
 /// Arena allocator used to parse each JSON object
-arena: *ArenaAllocator,
+arena: ArenaAllocator,
 /// Indicates that we've parsed the "events" field and are parsing the JSON objects in that array
 open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
@@ -35,13 +36,9 @@ const FeedReader = @This();
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) Allocator.Error!FeedReader {
-    const arena_ptr: *ArenaAllocator = try allocator.create(ArenaAllocator);
-    arena_ptr.* = .init(allocator);
-
+pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
     return .{
-        .parent_allocator = allocator,
-        .arena = arena_ptr,
+        .arena = .init(allocator),
         .telemetry = .init(file_path),
         .file_stream = .init(file, with_file_lock),
     };
@@ -321,13 +318,9 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
 }
 
 /// Destroys the arena and all memory it allocated. Also closes the file stream.
-pub fn deinit(self: FeedReader) void {
-    const parent_allocator: Allocator = self.parent_allocator;
-    const arena_ptr: *ArenaAllocator = self.arena;
-
+pub fn deinit(self: *FeedReader) void {
     self.file_stream.close();
     self.arena.deinit();
-    parent_allocator.destroy(arena_ptr);
 }
 
 /// Tracks basic data about where we are in the open file
@@ -346,6 +339,8 @@ const Telemetry = struct {
 };
 
 /// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
+/// Really, there are two buffers. While the one is being read, the other is populated on another thread.
+/// Switches between the two to prevent having to wait on the syscall to read from the file.
 /// This prevents having to call the OS's read file function more than a few times.
 fn FileStream(comptime buf_size: usize) type {
     return struct {
@@ -353,105 +348,156 @@ fn FileStream(comptime buf_size: usize) type {
         file_handle: fd_t,
         /// If true, we'll need to unlock the file when we close the stream
         file_locked: bool,
-        /// Buffer that holds the chunk
-        buf: [buf_size]u8 = [_]u8{0} ** buf_size,
-        /// Slice of `buf` that we can extract bytes from
+        /// Buffer a
+        buf_a: [buf_size]u8 = [_]u8{0} ** buf_size,
+        /// Buffer b
+        buf_b: [buf_size]u8 = [_]u8{0} ** buf_size,
+        /// Slice of the buffer we're currently reading
         read_buffer: []u8 = undefined,
+        /// Set when reading the next buffer to indicate how long `read_buffer` will be on switch
+        next_len: usize = 0,
         /// Cursor on the `read_buffer`.
         /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
         cursor: isize = -1,
+        /// Which buffer we're reading
+        reading: bufId = .a,
+        /// Which buffer is loading with the next segment (on its own thread)
+        loading: bufId = .b,
+        /// Can only load 1 buffer at a time, so this mutex prevents the buffer being read from bleeding into the one on loading
+        load_mutex: Mutex,
+        /// Since we're got some multi-thread happening, we need to capture any errors that happen
+        read_error: ?anyerror = null,
         /// If true, we've encountered the end of the file.
         /// Once the `cursor` reaches the length of the `read_buffer`, we've streamed the whole file.
         eof: bool = false,
+        /// Kinda "for real this time" flag to indicate that we're on the last stretch of the buffer, on the way to EOF
+        on_final: bool = false,
+
+        const bufId = enum(u1) { a, b };
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
         pub fn init(file: File, with_file_lock: bool) @This() {
             return .{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
+                .load_mutex = Mutex{},
             };
         }
 
         /// Stream the next byte or `null` if EOF
         pub fn nextByte(self: *@This()) !?u8 {
-            if (self.cursor < 0 or self.cursor == self.read_buffer.len) {
-                if (self.eof) {
+            if (self.cursor < 0) {
+                try self.start();
+            } else if (self.cursor == self.read_buffer.len) {
+                if (self.on_final) {
                     return null;
                 }
-                try self.nextSegment();
-                self.cursor = 0;
+                try self.switchBuf();
             }
-            defer self.cursor += 1;
+            assert(self.cursor >= 0);
 
+            defer self.cursor += 1;
             return self.read_buffer[@bitCast(self.cursor)];
         }
 
-        // TODO : Do we need this? The idea behind this function is to get around non-ASCII encoding and to clean up the parsing code above.
-        pub fn scanUntil(self: *@This(), delimiter: []const u8, telemetry: *Telemetry) error{ EndOfStream, ReadError }!?usize {
-            var idx: usize = 0;
-            var bytes_read: usize = 0;
-            while (self.nextByte()) |byte| {
-                if (byte) {
-                    var new_line: bool = false;
-                    defer {
-                        bytes_read += 1;
-                        if (!new_line) {
-                            telemetry.pos += 1;
-                        } else {
-                            telemetry.pos = 0;
-                            telemetry.line += 1;
-                        }
-                    }
+        fn start(self: *@This()) !void {
+            assert(self.cursor < 0);
 
-                    if (byte == '\n') {
-                        new_line = true;
-                    }
+            try self.nextSegment(.a);
+            self.read_buffer = self.buf_a[0..self.next_len];
+            self.cursor = 0;
 
-                    if (idx < delimiter.len) {
-                        if (byte == delimiter[idx]) {
-                            idx += 1;
-                            // we have a match
-                            if (idx == delimiter.len) {
-                                return bytes_read - 1;
-                            }
-                        } else {
-                            idx = 0;
-                        }
-                    }
-                }
-                return error.EndOfStream;
-            } else |err| {
-                log.err("Unexpected error at '{s}', line {d}, pos {d}: {s} -> {?}", .{
-                    telemetry.file_path,
-                    telemetry.line,
-                    telemetry.pos,
-                    @errorName(err),
-                    @errorReturnTrace(),
-                });
-                return error.ReadError;
+            self.beginNext(.b) catch |err| {
+                self.read_error = err;
+                return err;
+            };
+        }
+
+        fn beginNext(self: *@This(), load_buf: bufId) !void {
+            if (self.eof) {
+                // early return if we determine we're done reading
+                return;
             }
-            return null;
+            if (self.read_error) |err| {
+                // encountered error, which also terminates our read
+                return err;
+            }
+            const thread: Thread = try .spawn(.{}, nextSegment, .{ self, load_buf });
+            thread.detach();
+        }
+
+        fn switchBuf(self: *@This()) !void {
+            self.load_mutex.lock();
+            defer self.load_mutex.unlock();
+
+            self.reading = @enumFromInt(~@intFromEnum(self.reading));
+            self.loading = @enumFromInt(~@intFromEnum(self.loading));
+
+            self.cursor = 0;
+            if (self.eof) {
+                self.on_final = true;
+            }
+            switch (self.reading) {
+                .a => self.read_buffer = self.buf_a[0..self.next_len],
+                .b => self.read_buffer = self.buf_b[0..self.next_len],
+            }
+            try self.beginNext(self.loading);
         }
 
         /// Loads the next chunk of the file into `buf` and resets the `cursor` to 0.
-        fn nextSegment(self: *@This()) !void {
+        fn nextSegment(self: *@This(), load_buf: bufId) !void {
+            self.load_mutex.lock();
+            errdefer |err| self.read_error = err;
+            defer self.load_mutex.unlock();
+
+            if (self.eof) {
+                return;
+            }
+            if (self.read_error) |_| {
+                // encountered error, which also terminates our read
+                return;
+            }
+
             const file: File = .{ .handle = self.file_handle };
             const reader: AnyReader = file.reader().any();
 
-            const bytes_read: usize = try reader.readAtLeast(&self.buf, buf_size);
+            var to_load: []u8 = undefined;
+            switch (load_buf) {
+                .a => to_load = &self.buf_a,
+                .b => to_load = &self.buf_b,
+            }
+
+            const bytes_read: usize = try reader.readAtLeast(to_load, buf_size);
             if (bytes_read < buf_size) {
                 self.eof = true;
+                self.on_final = bytes_read == 0;
             }
-            self.read_buffer = self.buf[0..bytes_read];
+            self.next_len = bytes_read;
+        }
+
+        /// Errors stop the stream. Call this to resume the stream.
+        pub fn clearError(self: *@This()) void {
+            if (self.eof) {
+                return;
+            }
+
+            if (self.read_error) |_| {
+                self.load_mutex.lock();
+                defer self.load_mutex.unlock();
+
+                self.read_error = null;
+                self.cursor = -1;
+            }
         }
 
         /// Close the file and unlock it if `file_locked`
-        pub fn close(self: @This()) void {
+        pub fn close(self: *@This()) void {
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
                 file.unlock();
             }
             file.close();
+            self.* = undefined;
         }
     };
 }

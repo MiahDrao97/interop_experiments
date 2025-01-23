@@ -35,17 +35,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         return .failedToOpen;
     };
 
-    reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
-        // these branch hints tell the compiler not to optimize for this control flow
-        @branchHint(.cold);
-        switch (err) {
-            Allocator.Error.OutOfMemory => {
-                log.err("FATAL: Out of memory. Last attempted allocation: {?}", .{@errorReturnTrace()});
-                return .outOfMemory;
-            },
-        }
-    };
-
+    reader = .new(alloc, file, mem.sliceTo(file_path, 0), false);
     return .opened;
 }
 
@@ -59,7 +49,7 @@ export fn nextScan() ScanResult {
 
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
-    if (reader) |current_reader| {
+    if (reader) |*current_reader| {
         current_reader.deinit();
         reader = null;
     }
