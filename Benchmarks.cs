@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Numerics;
 
 namespace InteropExperiments;
@@ -35,13 +34,21 @@ public class Benchmarks
 
     public void Run()
     {
-        for (int i = 0; i < 20; i++)
+        try
         {
-            foreach (int count in _counts)
+            for (int i = 0; i < 20; i++)
             {
-                RunZigIvMtrReader(count);
-                RunCsharpIvMtrReader(count);
+                foreach (int count in _counts)
+                {
+                    RunZigIvMtrReader(count);
+                    RunCsharpIvMtrReader(count);
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to perform benchmarks: {ex.Message} -> {ex.StackTrace}");
+            throw;
         }
 
         Console.WriteLine();

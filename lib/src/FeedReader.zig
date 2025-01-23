@@ -22,7 +22,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: FileStream(8192),
+file_stream: *DualBufferFileStream(8192),
 
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
@@ -32,11 +32,11 @@ const FeedReader = @This();
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn init(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
+pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
     return .{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
-        .file_stream = .init(file, with_file_lock),
+        .file_stream = try .startNew(allocator, file, with_file_lock),
     };
 }
 
@@ -522,12 +522,13 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             if (self.eof) {
                 self.on_final = true;
             }
-            switch (self.reading) {
-                .a => self.read_buffer = self.buf_a[0..self.next_len],
-                .b => self.read_buffer = self.buf_b[0..self.next_len],
-            }
+            self.read_buffer = switch (self.reading) {
+                .a => self.buf_a[0..self.next_len],
+                .b => self.buf_b[0..self.next_len],
+            };
 
-            if (self.eof) {
+            // seems kinda redundant, but we need to make sure a zombie thread doesn't try to read a close file
+            if (self.eof or self.on_final) {
                 return;
             }
             // get the next one started
@@ -565,7 +566,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
 
         /// Errors stop the stream. Call this to resume the stream.
-        pub fn clearError(self: *@This()) void {
+        pub fn clearError(self: *Self) void {
             if (self.read_error) |_| {
                 self.read_error = null;
                 self.cursor = -1;
@@ -573,7 +574,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
 
         /// Close the file and unlock it if `file_locked`
-        pub fn close(self: *@This()) void {
+        pub fn close(self: *Self) void {
             self.loading_thread.join();
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
