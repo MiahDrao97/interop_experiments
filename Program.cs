@@ -1,4 +1,4 @@
-﻿#define SIMPLE_CLI_TESTING
+﻿// #define SIMPLE_CLI_TESTING
 #if SIMPLE_CLI_TESTING
 using System.Diagnostics;
 #endif
@@ -102,6 +102,9 @@ internal static class Program
         Console.WriteLine($"C# total time: {csElapsedMs}ms. Processed: {csidx} Avg processing time: {csAvg}ms");
         Console.WriteLine($"Opened zig reader in {zigOpenTimeMs}ms");
         Console.WriteLine($"Zig total time: {zigElapsedMs}ms. Processed: {zidx} Avg processing time: {zigAvg}ms");
+#else
+        Benchmarks benchmarks = new(args[0], [1000, 10000, 20000, 40000]);
+        benchmarks.Run();
 #endif
     }
 }

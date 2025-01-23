@@ -13,7 +13,6 @@ const windows = std.os.windows;
 const posix = std.posix;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
-const Mutex = Thread.Mutex;
 const assert = std.debug.assert;
 
 /// Arena allocator used to parse each JSON object
@@ -23,7 +22,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: FileStream(6000),
+file_stream: FileStream(8192),
 
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
@@ -33,7 +32,7 @@ const FeedReader = @This();
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn new(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
+pub fn init(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
     return .{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
@@ -228,11 +227,12 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     var i: usize = 0;
     while (self.file_stream.nextByte()) |byte| {
         if (i >= buf.len) {
-            log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size.", .{
+            log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
                 buf.len,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
+                buf,
             });
             return error.BufferOverflow;
         }
@@ -432,13 +432,15 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         next_len: usize = 0,
         /// Cursor on the `read_buffer`.
         /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
-        cursor: isize = -1,
+        cursor: usize = 0,
         /// Which buffer we're reading
         reading: bufId = .a,
         /// Which buffer is loading with the next segment (on its own thread)
         loading: bufId = .b,
-        /// Can only load 1 buffer at a time, so this mutex prevents switching to the next buffer before it's filled out
-        load_mutex: Mutex,
+        /// Pointer to the thread that loads the next buffer
+        loading_thread: *Thread,
+        /// allocator
+        allocator: Allocator,
         /// Since we're got some multi-thread happening, we need to capture any errors that happen
         read_error: ?anyerror = null,
         /// If true, we've encountered the end of the file.
@@ -448,24 +450,29 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         on_final: bool = false,
 
         const bufId = enum(u1) { a = 0, b = 1 };
+        const Self = @This();
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
-        pub fn init(file: File, with_file_lock: bool) @This() {
-            return .{
+        pub fn startNew(allocator: Allocator, file: File, with_file_lock: bool) !*Self {
+            const new_stream: *Self = try allocator.create(Self);
+            errdefer allocator.destroy(new_stream);
+
+            const thread_ptr: *Thread = try allocator.create(Thread);
+            errdefer allocator.destroy(thread_ptr);
+
+            new_stream.* = .{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
-                .load_mutex = Mutex{},
+                .loading_thread = thread_ptr,
+                .allocator = allocator,
             };
+            try new_stream.start();
+            return new_stream;
         }
 
         /// Stream the next byte or `null` if EOF
-        pub fn nextByte(self: *@This()) !?u8 {
-            if (self.cursor < 0) {
-                self.start() catch |start_err| {
-                    log.err("Failed to start file stream: {s} -> {?}", .{ @errorName(start_err), @errorReturnTrace() });
-                    return start_err;
-                };
-            } else if (self.cursor == self.read_buffer.len) {
+        pub fn nextByte(self: *Self) !?u8 {
+            if (self.cursor == self.read_buffer.len) {
                 if (self.on_final) {
                     return null;
                 }
@@ -481,41 +488,33 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             }
 
             defer self.cursor += 1;
-            return self.read_buffer[@bitCast(self.cursor)];
+            return self.read_buffer[self.cursor];
         }
 
-        fn start(self: *@This()) !void {
-            assert(self.cursor < 0);
-
+        fn start(self: *Self) !void {
             try self.nextSegment(.a);
             self.read_buffer = self.buf_a[0..self.next_len];
             self.cursor = 0;
 
-            self.beginNext(.b) catch |err| {
+            self.loading_thread.* = self.beginNext(.b) catch |err| {
                 log.err("Encountered error {s} => {?}. Storing error in object state and will halt reading the file.", .{ @errorName(err), @errorReturnTrace() });
                 self.read_error = err;
                 return err;
             };
         }
 
-        fn beginNext(self: *@This(), load_buf: bufId) !void {
-            if (self.eof) {
-                // early return if we determine we're done reading
-                return;
-            }
+        fn beginNext(self: *Self, load_buf: bufId) !Thread {
             if (self.read_error) |err| {
                 // encountered error, which also terminates our read
                 log.err("Stored error '{s}', which likely put in place by another thread.", .{@errorName(err)});
                 return err;
             }
             const thread: Thread = try .spawn(.{}, nextSegment, .{ self, load_buf });
-            thread.detach();
+            return thread;
         }
 
-        fn switchBuf(self: *@This()) !void {
-            self.load_mutex.lock();
-            defer self.load_mutex.unlock();
-
+        fn switchBuf(self: *Self) !void {
+            self.loading_thread.join();
             self.reading = @enumFromInt(~@intFromEnum(self.reading));
             self.loading = @enumFromInt(~@intFromEnum(self.loading));
 
@@ -527,15 +526,17 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 .a => self.read_buffer = self.buf_a[0..self.next_len],
                 .b => self.read_buffer = self.buf_b[0..self.next_len],
             }
+
+            if (self.eof) {
+                return;
+            }
             // get the next one started
-            try self.beginNext(self.loading);
+            self.loading_thread.* = try self.beginNext(self.loading);
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
-        fn nextSegment(self: *@This(), load_buf: bufId) !void {
-            self.load_mutex.lock();
+        fn nextSegment(self: *Self, load_buf: bufId) !void {
             errdefer |err| self.read_error = err;
-            defer self.load_mutex.unlock();
 
             if (self.eof) {
                 return;
@@ -549,11 +550,10 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             const file: File = .{ .handle = self.file_handle };
             const reader: AnyReader = file.reader().any();
 
-            var to_load: []u8 = undefined;
-            switch (load_buf) {
-                .a => to_load = &self.buf_a,
-                .b => to_load = &self.buf_b,
-            }
+            const to_load: []u8 = switch (load_buf) {
+                .a => &self.buf_a,
+                .b => &self.buf_b,
+            };
 
             const bytes_read: usize = try reader.readAtLeast(to_load, buf_size);
             if (bytes_read < buf_size) {
@@ -567,9 +567,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         /// Errors stop the stream. Call this to resume the stream.
         pub fn clearError(self: *@This()) void {
             if (self.read_error) |_| {
-                self.load_mutex.lock();
-                defer self.load_mutex.unlock();
-
                 self.read_error = null;
                 self.cursor = -1;
             }
@@ -577,12 +574,14 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         /// Close the file and unlock it if `file_locked`
         pub fn close(self: *@This()) void {
+            self.loading_thread.join();
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
                 file.unlock();
             }
             file.close();
-            self.* = undefined;
+            self.allocator.destroy(self.loading_thread);
+            self.allocator.destroy(self);
         }
     };
 }
