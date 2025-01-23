@@ -214,24 +214,13 @@ internal static partial class LibBindings
     /// </summary>
     public static NewReaderResult OpenReader(string fileName)
     {
-        Stopwatch sw = Stopwatch.StartNew();
-        try
+        unsafe
         {
-            unsafe
+            fixed (byte* ptr = Encoding.UTF8.GetBytes(fileName))
             {
-                fixed (byte* ptr = Encoding.UTF8.GetBytes(fileName))
-                {
-                    Console.WriteLine($"Got byte array from string in {sw.ElapsedMilliseconds}ms");
-                    int result = Open(ptr);
-                    Console.WriteLine($"Received int result in {sw.ElapsedMilliseconds}ms");
-                    return (NewReaderResult)result;
-                }
+                int result = Open(ptr);
+                return (NewReaderResult)result;
             }
-        }
-        finally
-        {
-            Console.WriteLine($"Initialized Zig reader in {sw.ElapsedMilliseconds}ms");
-
         }
     }
 
