@@ -363,7 +363,7 @@ fn FileStream(comptime buf_size: usize) type {
         reading: bufId = .a,
         /// Which buffer is loading with the next segment (on its own thread)
         loading: bufId = .b,
-        /// Can only load 1 buffer at a time, so this mutex prevents the buffer being read from bleeding into the one on loading
+        /// Can only load 1 buffer at a time, so this mutex prevents switching to the next buffer before it's filled out
         load_mutex: Mutex,
         /// Since we're got some multi-thread happening, we need to capture any errors that happen
         read_error: ?anyerror = null,
@@ -441,6 +441,7 @@ fn FileStream(comptime buf_size: usize) type {
                 .a => self.read_buffer = self.buf_a[0..self.next_len],
                 .b => self.read_buffer = self.buf_b[0..self.next_len],
             }
+            // get the next one started
             try self.beginNext(self.loading);
         }
 
@@ -477,10 +478,6 @@ fn FileStream(comptime buf_size: usize) type {
 
         /// Errors stop the stream. Call this to resume the stream.
         pub fn clearError(self: *@This()) void {
-            if (self.eof) {
-                return;
-            }
-
             if (self.read_error) |_| {
                 self.load_mutex.lock();
                 defer self.load_mutex.unlock();

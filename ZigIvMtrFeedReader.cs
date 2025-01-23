@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -108,7 +109,7 @@ internal static partial class LibBindings
 #endif
 
     [LibraryImport(_libFile, EntryPoint = "open")]
-    private static partial int Open(IntPtr fileName);
+    private static unsafe partial int Open(byte* fileName);
 
     [LibraryImport(_libFile, EntryPoint = "close")]
     private static partial void Close();
@@ -213,13 +214,24 @@ internal static partial class LibBindings
     /// </summary>
     public static NewReaderResult OpenReader(string fileName)
     {
-        unsafe
+        Stopwatch sw = Stopwatch.StartNew();
+        try
         {
-            fixed (byte* ptr = Encoding.UTF8.GetBytes(fileName))
+            unsafe
             {
-                int result = Open(new IntPtr(ptr));
-                return (NewReaderResult)result;
+                fixed (byte* ptr = Encoding.UTF8.GetBytes(fileName))
+                {
+                    Console.WriteLine($"Got byte array from string in {sw.ElapsedMilliseconds}ms");
+                    int result = Open(ptr);
+                    Console.WriteLine($"Received int result in {sw.ElapsedMilliseconds}ms");
+                    return (NewReaderResult)result;
+                }
             }
+        }
+        finally
+        {
+            Console.WriteLine($"Initialized Zig reader in {sw.ElapsedMilliseconds}ms");
+
         }
     }
 

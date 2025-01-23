@@ -27,13 +27,27 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         return .conflict;
     }
 
-    const file: File = std.fs.cwd().openFileZ(
-        file_path,
-        File.OpenFlags{ .mode = .read_only },
-    ) catch |err| {
-        log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
-        return .failedToOpen;
-    };
+    const open_start: i64 = std.time.microTimestamp();
+    var file: File = undefined;
+    if (std.fs.path.isAbsoluteZ(file_path)) {
+        file = std.fs.openFileAbsoluteZ(
+            file_path,
+            File.OpenFlags{ .mode = .read_only },
+        ) catch |err| {
+            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            return .failedToOpen;
+        };
+    } else {
+        file = std.fs.cwd().openFileZ(
+            file_path,
+            File.OpenFlags{ .mode = .read_only },
+        ) catch |err| {
+            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            return .failedToOpen;
+        };
+    }
+    const open_end: i64 = std.time.microTimestamp();
+    std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
 
     reader = .new(alloc, file, mem.sliceTo(file_path, 0), false);
     return .opened;
