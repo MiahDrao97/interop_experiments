@@ -23,10 +23,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: FileStream(8192),
-
-/// global buffer, since we're dipping into this with every `nextScan()` call
-threadlocal var global_buf: [4096]u8 = undefined;
+file_stream: FileStream(6000),
 
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
@@ -49,7 +46,8 @@ pub fn nextScan(self: *FeedReader) ScanResult {
     // the file is supposed to be a massive JSON file; we care about the "events" field, which is an array of objects with depth 1
     if (self.open_events) {
         // parse JSON object: from '{' until '}'
-        const slice: []const u8 = self.parseNextObject(&global_buf) catch |err| {
+        var buf: [4096]u8 = undefined;
+        const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
             log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
             return .err(.failedToRead);
         } orelse return .eof;
@@ -61,14 +59,17 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
         ) catch |err| switch (err) {
             error.OutOfMemory => {
                 @branchHint(.cold);
                 return .err(.outOfMemory);
             },
             else => {
-                log.err("Failed to parse feeder object: {s} -> {?}\nObject:\n{s}\n", .{
+                log.err("Failed to parse feeder object at '{s}', line {d}, pos {d}: {s} -> {?}\nObject:\n{s}\n", .{
+                    self.telemetry.file_path,
+                    self.telemetry.line,
+                    self.telemetry.pos,
                     @errorName(err),
                     @errorReturnTrace(),
                     slice,
@@ -348,6 +349,79 @@ fn FileStream(comptime buf_size: usize) type {
         file_handle: fd_t,
         /// If true, we'll need to unlock the file when we close the stream
         file_locked: bool,
+        /// Buffer
+        buf: [buf_size]u8 = [_]u8{0} ** buf_size,
+        /// Slice of the buffer we're currently reading
+        read_buffer: []u8 = undefined,
+        /// Cursor on the `read_buffer`.
+        /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
+        cursor: isize = -1,
+        /// If true, we've encountered the end of the file.
+        /// Once the `cursor` reaches the length of the `read_buffer`, we've streamed the whole file.
+        eof: bool = false,
+
+        /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
+        pub fn init(file: File, with_file_lock: bool) @This() {
+            return .{
+                .file_handle = file.handle,
+                .file_locked = with_file_lock,
+            };
+        }
+
+        /// Stream the next byte or `null` if EOF
+        pub fn nextByte(self: *@This()) !?u8 {
+            if (self.cursor < 0 or self.cursor == self.read_buffer.len) {
+                if (self.eof) {
+                    return null;
+                }
+                try self.nextSegment();
+            }
+            assert(self.cursor >= 0);
+
+            defer self.cursor += 1;
+            return self.read_buffer[@bitCast(self.cursor)];
+        }
+
+        /// Loads the next chunk of the file into the buffer that matches `load_buf`
+        fn nextSegment(self: *@This()) !void {
+            if (self.eof) {
+                return;
+            }
+
+            const file: File = .{ .handle = self.file_handle };
+            const reader: AnyReader = file.reader().any();
+
+            const bytes_read: usize = try reader.readAtLeast(&self.buf, buf_size);
+            if (bytes_read < buf_size) {
+                self.eof = true;
+            }
+            self.cursor = 0;
+            self.read_buffer = self.buf[0..bytes_read];
+        }
+
+        /// Close the file and unlock it if `file_locked`
+        pub fn close(self: *@This()) void {
+            const file: File = .{ .handle = self.file_handle };
+            if (self.file_locked) {
+                file.unlock();
+            }
+            file.close();
+            self.* = undefined;
+        }
+    };
+}
+
+/// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
+/// Really, there are two buffers. While the one is being read, the other is populated on another thread.
+/// Switches between the two to prevent having to wait on the syscall to read from the file.
+/// This prevents having to call the OS's read file function more than a few times.
+fn DualBufferFileStream(comptime buf_size: usize) type {
+    // FIXME : Seems that we're skipping parts of our stream? Like we don't switch buffers or something.
+    return struct {
+        /// Owned by the OS; underlying type varies on each platform
+        file_handle: fd_t,
+        /// If true, we'll need to unlock the file when we close the stream
+        file_locked: bool,
         /// Buffer a
         buf_a: [buf_size]u8 = [_]u8{0} ** buf_size,
         /// Buffer b
@@ -373,7 +447,7 @@ fn FileStream(comptime buf_size: usize) type {
         /// Kinda "for real this time" flag to indicate that we're on the last stretch of the buffer, on the way to EOF
         on_final: bool = false,
 
-        const bufId = enum(u1) { a, b };
+        const bufId = enum(u1) { a = 0, b = 1 };
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
         pub fn init(file: File, with_file_lock: bool) @This() {
@@ -387,14 +461,24 @@ fn FileStream(comptime buf_size: usize) type {
         /// Stream the next byte or `null` if EOF
         pub fn nextByte(self: *@This()) !?u8 {
             if (self.cursor < 0) {
-                try self.start();
+                self.start() catch |start_err| {
+                    log.err("Failed to start file stream: {s} -> {?}", .{ @errorName(start_err), @errorReturnTrace() });
+                    return start_err;
+                };
             } else if (self.cursor == self.read_buffer.len) {
                 if (self.on_final) {
                     return null;
                 }
-                try self.switchBuf();
+                self.switchBuf() catch |switch_buf_err| {
+                    log.err("Failed to switch buffers: {s} -> {?}", .{ @errorName(switch_buf_err), @errorReturnTrace() });
+                    return switch_buf_err;
+                };
             }
             assert(self.cursor >= 0);
+            if (self.read_error) |err| {
+                log.err("Error occurred while loading next buffer. Will not continue reading: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+                return err;
+            }
 
             defer self.cursor += 1;
             return self.read_buffer[@bitCast(self.cursor)];
@@ -408,6 +492,7 @@ fn FileStream(comptime buf_size: usize) type {
             self.cursor = 0;
 
             self.beginNext(.b) catch |err| {
+                log.err("Encountered error {s} => {?}. Storing error in object state and will halt reading the file.", .{ @errorName(err), @errorReturnTrace() });
                 self.read_error = err;
                 return err;
             };
@@ -420,6 +505,7 @@ fn FileStream(comptime buf_size: usize) type {
             }
             if (self.read_error) |err| {
                 // encountered error, which also terminates our read
+                log.err("Stored error '{s}', which likely put in place by another thread.", .{@errorName(err)});
                 return err;
             }
             const thread: Thread = try .spawn(.{}, nextSegment, .{ self, load_buf });
@@ -454,8 +540,9 @@ fn FileStream(comptime buf_size: usize) type {
             if (self.eof) {
                 return;
             }
-            if (self.read_error) |_| {
+            if (self.read_error) |stored_err| {
                 // encountered error, which also terminates our read
+                log.err("Stored error '{s}', which likely put in place by another thread.", .{@errorName(stored_err)});
                 return;
             }
 

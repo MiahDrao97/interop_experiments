@@ -1,4 +1,9 @@
-﻿namespace InteropExperiments;
+﻿#define SIMPLE_CLI_TESTING
+#if SIMPLE_CLI_TESTING
+using System.Diagnostics;
+#endif
+
+namespace InteropExperiments;
 
 internal static class Program
 {
