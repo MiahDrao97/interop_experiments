@@ -49,18 +49,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     const open_end: i64 = std.time.microTimestamp();
     std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
 
-    reader = FeedReader.new(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| switch (err) {
-        error.OutOfMemory => {
-            @branchHint(.cold);
-            log.err("FATAL: Out of memory. Last allocation -> {?}", .{@errorReturnTrace()});
-            return .outOfMemory;
-        },
-        else => {
-            @branchHint(.cold);
-            log.err("Unexpected error: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-            return .failedToOpen;
-        }
-    };
+    reader = .init(alloc, file, mem.sliceTo(file_path, 0), false);
     return .opened;
 }
 
