@@ -341,8 +341,6 @@ const Telemetry = struct {
 };
 
 /// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
-/// Really, there are two buffers. While the one is being read, the other is populated on another thread.
-/// Switches between the two to prevent having to wait on the syscall to read from the file.
 /// This prevents having to call the OS's read file function more than a few times.
 fn FileStream(comptime buf_size: usize) type {
     return struct {
@@ -417,7 +415,7 @@ fn FileStream(comptime buf_size: usize) type {
 /// Switches between the two to prevent having to wait on the syscall to read from the file.
 /// This prevents having to call the OS's read file function more than a few times.
 fn DualBufferFileStream(comptime buf_size: usize) type {
-    // FIXME : Seems that we're skipping parts of our stream? Like we don't switch buffers or something.
+    // FIXME : This should theoretically be faster, but it seems the syscalls for the mutexes result in this being slower than the other file stream
     return struct {
         /// Owned by the OS; underlying type varies on each platform
         file_handle: fd_t,
