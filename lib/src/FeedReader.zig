@@ -552,11 +552,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 return;
             }
 
-            self.mutex.lock();
-            defer self.mutex.unlock();
-
             const file: File = .{ .handle = self.file_handle };
             const reader: AnyReader = file.reader().any();
+
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             const to_load: []u8 = switch (load_buf) {
                 .a => &self.buf_a,
@@ -580,11 +580,13 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             }
         }
 
+        pub fn closeAsync(self: *Self) Thread.SpawnError!Thread {
+            return try .spawn(.{}, close, .{self});
+        }
+
         /// Close the file and unlock it if `file_locked`
         pub fn close(self: *Self) void {
-            if (self.mutex.tryLock()) {
-                // we have the mutex, so we're gonna self-destruct
-            } else {
+            if (!self.mutex.tryLock()) {
                 // wait for the thread to finish before closing everything down
                 self.loading_thread.join();
             }
