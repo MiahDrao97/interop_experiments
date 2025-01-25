@@ -1,7 +1,7 @@
 # Interop Experiments
 
 The primary purpose of this repository is to compare C# and Zig when it comes to lazily parsing a large JSON file.
-The JSON schema comes from USPS's file feeds for informed visibilty mail trackin & reporting.
+The JSON schema comes from USPS's file feeds for informed visibilty mail tracking & reporting.
 The theoretical situation is some server receiving file feeds from USPS that contain hundreds of thousands of scans.
 
 I wanted to learn how p/invoke works while simultaneously observing the performance difference between C#'s tools and Zig's.
@@ -20,13 +20,14 @@ Build configuration is defined in `/lib/build.zig`.
 # Setup
 
 To run, you need .NET 8 and Zig installed ([master branch](https://ziglang.org/download/)).
+This code was built using Zig version `0.14.0-dev.2370+5c6b25d9b`.
 
 ## Build
 
 There is a `postbuild.bat` file called on a `dotnet build` command, which handles building the Zig library and unit-testing it.
 It assumes that the `zig` command is added to PATH.
 It then copies the binaries from the resulting `zig-out/bin/` directory into the debug and release directories on the .NET side.
-Due note that you may have to manually create `/bin/Debug/net8.0` or `/bin/Release/net8.0`. The batch file assumes those directories already exist and copies to both.
+Note that you may have to manually create `/bin/Debug/net8.0` or `/bin/Release/net8.0`. The batch file assumes those directories already exist and copies to both.
 
 ## Run
 
