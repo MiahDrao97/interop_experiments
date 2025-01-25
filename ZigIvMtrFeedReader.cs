@@ -102,7 +102,7 @@ public sealed class ZigIvMtrFeedReader : IIvMtrFeedReader
 /// </summary>
 internal static partial class LibBindings
 {
-    // be OS-aware: we develop on Windows machines, but staging/prod are on Linux machines
+    // be OS-aware
 #if WINDOWS
     private const string _libFile = "zig_lib.dll";
 #else
