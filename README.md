@@ -9,10 +9,11 @@ I wanted to learn how p/invoke works while simultaneously observing the performa
 Generally the parsing algorithm looks like this:
 1. Open JSON file (leaving it open).
 2. Parse until the "events" field is found (see expected schemea: we're expecting an array of objects that we'll parse from there).
-3. Lazily load each scan. Each reader implements `IEnumerable<ScanData>`, where each `MoveNext()` call on the resulting `Enumerator<ScanData>` simply parses the next scan object.
-4. Dispose, which closes the file.
+3. Lazily load each scan. Each reader implements `IEnumerable<ScanResult>`, where each `MoveNext()` call on the resulting `Enumerator<ScanResult>` simply parses the next scan object.
+4. Dispose, which closes the file and frees resources.
 
-The C# reader is implemented in `CsharpIvMtrReader.cs`. The Zig reader is platform-invokved through `ZigIvMtrReader.cs`.
+Both readers implement the same interface, `IIvMtrFeedReader.cs`, which simply is `IEnumerable<ScanResult>` and `IDisposable`.
+The C# reader is implemented in `CsharpIvMtrFeedReader.cs`. The Zig reader is platform-invokved through `ZigIvMtrFeedReader.cs`.
 It expects `"open"`, `"close"`, and `"nextScan"` entry points in `zig_lib.dll`.
 The zig implementation is in the `lib` directory. The entry points are defined in `/lib/src/root.zig`.
 Build configuration is defined in `/lib/build.zig`.
@@ -27,7 +28,8 @@ This code was built using Zig version `0.14.0-dev.2370+5c6b25d9b`.
 There is a `postbuild.bat` file called on a `dotnet build` command, which handles building the Zig library and unit-testing it.
 It assumes that the `zig` command is added to PATH.
 It then copies the binaries from the resulting `zig-out/bin/` directory into the debug and release directories on the .NET side.
-Note that you may have to manually create `/bin/Debug/net8.0` or `/bin/Release/net8.0`. The batch file assumes those directories already exist and copies to both.
+Note that you may have to manually create `/bin/Debug/net8.0` and/or `/bin/Release/net8.0`.
+The batch file assumes those directories already exist and copies to both.
 
 ## Run
 
@@ -47,5 +49,8 @@ The expected schema is like:
     // other fields
 }
 ```
+The `mailPhase` field is expected to have specific phrases.
+Please refer to `IV_MTR_DataDictionary_20180810.xslx` for documentation on the USPS file feed schema.
+
 This will run 20 iterations, parsing the first 1000, then 10000, then 20000, and finally 40000.
 It will collect average, minimum, and maximum execution time parsing and iterating through those scan objects.
