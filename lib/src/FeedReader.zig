@@ -432,9 +432,9 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
         cursor: usize = 0,
         /// Which buffer we're reading
-        reading: bufId = .a,
+        reading: BufferId = .a,
         /// Which buffer is loading with the next segment (on its own thread)
-        loading: bufId = .b,
+        loading: BufferId = .b,
         /// Pointer to the thread that loads the next buffer
         loading_thread: *Thread,
         /// allocator
@@ -447,7 +447,8 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         /// Kinda "for real this time" flag to indicate that we're on the last stretch of the buffer, on the way to EOF
         on_final: bool = false,
 
-        const bufId = enum(u1) { a = 0, b = 1 };
+        const BufferId = enum(u1) { a = 0, b = 1 };
+        const State = enum { running, suspended, complete };
         const Self = @This();
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
@@ -501,7 +502,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             };
         }
 
-        fn beginNext(self: *Self, load_buf: bufId) !Thread {
+        fn beginNext(self: *Self, load_buf: BufferId) !Thread {
             if (self.read_error) |err| {
                 // encountered error, which also terminates our read
                 log.err("Stored error '{s}', which likely put in place by another thread.", .{@errorName(err)});
@@ -537,7 +538,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
-        fn nextSegment(self: *Self, load_buf: bufId) !void {
+        fn nextSegment(self: *Self, load_buf: BufferId) !void {
             errdefer |err| self.read_error = err;
 
             if (self.eof) {
@@ -590,6 +591,12 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.allocator.destroy(self.loading_thread);
             self.allocator.destroy(self);
         }
+
+        // TODO : Implement state machine that's just an indicator on what our reading state is like
+        // Try to have 1 background thread that we put to sleep in the "suspended" state so that we don't spawn more than 1 thread
+        const StateMachine = struct {
+            state: State,
+        };
     };
 }
 
