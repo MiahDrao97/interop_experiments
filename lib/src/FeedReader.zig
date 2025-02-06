@@ -13,7 +13,6 @@ const windows = std.os.windows;
 const posix = std.posix;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
-const Mutex = Thread.Mutex;
 const assert = std.debug.assert;
 
 /// Arena allocator used to parse each JSON object
@@ -23,7 +22,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: FileStream(8192),
+file_stream: *DualBufferFileStream(8192),
 
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
@@ -33,11 +32,11 @@ const FeedReader = @This();
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn init(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
+pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
     return .{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
-        .file_stream = .init(file, with_file_lock),
+        .file_stream = try .startNew(allocator, file, with_file_lock),
     };
 }
 
@@ -438,8 +437,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         loading: bufId = .b,
         /// Pointer to the thread that loads the next buffer
         loading_thread: *Thread,
-        /// Mutex to lock
-        mutex: Mutex,
         /// allocator
         allocator: Allocator,
         /// Since we're got some multi-thread happening, we need to capture any errors that happen
@@ -466,7 +463,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 .file_locked = with_file_lock,
                 .loading_thread = thread_ptr,
                 .allocator = allocator,
-                .mutex = Mutex{},
             };
             try new_stream.start();
             return new_stream;
@@ -529,8 +525,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 .b => self.buf_b[0..self.next_len],
             };
 
-            // seems kinda redundant, but we need to make sure a zombie thread doesn't try to read a close file
             if (self.eof or self.on_final) {
+                const ctx = struct {
+                    pub fn noop() void {}
+                };
+                self.loading_thread.* = try Thread.spawn(.{}, ctx.noop, .{});
                 return;
             }
             // get the next one started
@@ -552,9 +551,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
             const file: File = .{ .handle = self.file_handle };
             const reader: AnyReader = file.reader().any();
-
-            self.mutex.lock();
-            defer self.mutex.unlock();
 
             const to_load: []u8 = switch (load_buf) {
                 .a => &self.buf_a,
@@ -584,10 +580,8 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         /// Close the file and unlock it if `file_locked`
         pub fn close(self: *Self) void {
-            if (!self.mutex.tryLock()) {
-                // wait for the thread to finish before closing everything down
-                self.loading_thread.join();
-            }
+            // wait for the thread to finish before closing everything down
+            self.loading_thread.join();
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
                 file.unlock();

@@ -49,7 +49,13 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     const open_end: i64 = std.time.microTimestamp();
     std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
 
-    reader = .init(alloc, file, mem.sliceTo(file_path, 0), false);
+    reader = FeedReader.open(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| switch (err) {
+        Allocator.Error.OutOfMemory => return .outOfMemory,
+        else => {
+            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            return .failedToOpen;
+        }
+    };
     return .opened;
 }
 
