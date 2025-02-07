@@ -13,6 +13,7 @@ const windows = std.os.windows;
 const posix = std.posix;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
+const SpawnConfig = Thread.SpawnConfig;
 const assert = std.debug.assert;
 
 /// Arena allocator used to parse each JSON object
@@ -594,9 +595,83 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         // TODO : Implement state machine that's just an indicator on what our reading state is like
         // Try to have 1 background thread that we put to sleep in the "suspended" state so that we don't spawn more than 1 thread
-        const StateMachine = struct {
-            state: State,
-        };
+
+        pub fn StateMachine(comptime TError: type) type {
+            switch (@typeInfo(TError)) {
+                .error_set => {},
+                else => @compileError("Expected error set type for TError. Was '" ++ @typeName(TError) ++ "'"),
+            }
+            return struct {
+                state: State,
+
+                pub fn startNew(allocator: Allocator, spawn_config: SpawnConfig, function: fn (*State, anytype) TError!void, args: anytype) (Allocator.Error || Thread.SpawnError)!*const StateMachine(TError) {
+                    const ArgsType = @TypeOf(args);
+                    comptime var struct_info: std.builtin.Type.Struct = undefined;
+                    comptime var ReturnType: type = undefined;
+                    comptime {
+                        switch (@typeInfo(ArgsType)) {
+                            .@"struct" => |s| struct_info = s,
+                            else => @compileError("`args` must be a tuple or struct")
+                        }
+                        switch (@typeInfo(@TypeOf(function))) {
+                            .@"fn" => |fn_def| {
+                                ReturnType = fn_def.return_type orelse void;
+                                for (struct_info.fields, 0..) |field, i| {
+                                    if (field.type != fn_def.params[i].type orelse void) {
+                                        @compileError("Argument .@\"" ++ i ++ "\" expected type '" ++ @typeName(fn_def.params[i].type orelse void) ++ "'. Was '" ++ @typeName(field.type) ++ "'");
+                                    }
+                                }
+                            },
+                            else => @compileError("`function` must be a function type"),
+                        }
+                    }
+
+                    const state_machine: *StateMachine(TError) = try allocator.create(StateMachine(TError));
+                    state_machine.* = .{ .state = .suspended };
+
+                    const ctx = struct {
+                        pub fn eventLoop(self: *StateMachine(TError), worker: Worker(function, ArgsType, ReturnType)) TError!void {
+                            try worker.execute(self);
+                        }
+                    };
+
+                    // keep it on single thread
+                    const thread: Thread = try .spawn(spawn_config, ctx.eventLoop, .{ state_machine, Worker(function, ArgsType, ReturnType){ .args = args } });
+                    thread.detach();
+
+                    return state_machine;
+                }
+
+                fn Worker(comptime TArgs: type) type {
+                    return struct {
+                        args: TArgs,
+                        func: fn (*State, TArgs) TError!void,
+
+                        pub fn execute(self: @This(), ext_state: *State) TError!void {
+                            ext_state = .running;
+                            defer {
+                                if (ext_state == .running) {
+                                    ext_state = .suspended;
+                                }
+                            }
+                            try self.func(ext_state, self.args);
+                        }
+                    };
+                }
+
+                pub fn wait(self: *StateMachine(TError), sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
+                    const start_time: i64 = std.time.nanoTimestamp();
+                    while (self.state == .running) {
+                        Thread.sleep(sleep_ns);
+                        if (timeout_ns) |timeout| {
+                            if (std.time.nanoTimestamp() - start_time > timeout) {
+                                return error.Timeout;
+                            }
+                        }
+                    }
+                }
+            };
+        }
     };
 }
 
