@@ -442,14 +442,18 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         const Self = @This();
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
-        pub fn startNew(allocator: Allocator, file: File, with_file_lock: bool) !*Self {
+        pub fn startNew(
+            allocator: Allocator,
+            file: File,
+            with_file_lock: bool,
+        ) (error{ OutOfMemory, ReadError } || Thread.SpawnError)!*Self {
             const new_stream: *Self = try allocator.create(Self);
             errdefer allocator.destroy(new_stream);
 
             new_stream.* = .{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
-                .state_machine = try .startNew(allocator, SpawnConfig{}, callNextSegment, .{new_stream}),
+                .state_machine = try .startNew(allocator, SpawnConfig{}, callNextSegment, new_stream),
                 .loading = .a,
                 .reading = undefined,
                 .allocator = allocator,
@@ -476,9 +480,9 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             return self.read_buffer[self.cursor];
         }
 
-        fn start(self: *Self) !void {
-            var err: ?anyerror = null;
-            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+        fn start(self: *Self) error{ReadError}!void {
+            var err: ?error{ReadError} = null;
+            self.state_machine.awaitNext(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -488,17 +492,17 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.loading = .b;
             self.read_buffer = self.buf_a[0..self.next_len];
             self.cursor = 0;
-            self.state_machine.@"resume"();
+            self.state_machine.resumeExec();
         }
 
         fn callNextSegment(args: anytype, state: *State) error{ReadError}!void {
-            const self: *Self = args.@"0";
+            const self: *Self = args;
             try self.nextSegment(self.loading, state);
         }
 
         fn switchBuf(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
-            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+            self.state_machine.awaitNext(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -517,7 +521,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             };
 
             // get the next one started
-            self.state_machine.@"resume"();
+            self.state_machine.resumeExec();
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
@@ -566,9 +570,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.allocator.destroy(self);
         }
 
-        // TODO : Implement state machine that's just an indicator on what our reading state is like
-        // Try to have 1 background thread that we put to sleep in the "suspended" state so that we don't spawn more than 1 thread
-
         fn StateMachine(comptime TError: type) type {
             switch (@typeInfo(TError)) {
                 .error_set => {},
@@ -591,24 +592,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     args: anytype,
                 ) (Allocator.Error || Thread.SpawnError)!*StateMachine(TError) {
                     const ArgsType = @TypeOf(args);
-                    comptime var struct_info: std.builtin.Type.Struct = undefined;
-                    comptime {
-                        switch (@typeInfo(ArgsType)) {
-                            .@"struct" => |s| struct_info = s,
-                            else => @compileError("`args` must be a tuple or struct. Found '" ++ @typeName(ArgsType) ++ "'."),
-                        }
-                        switch (@typeInfo(@TypeOf(function))) {
-                            .@"fn" => |fn_def| {
-                                for (struct_info.fields, 0..) |field, i| {
-                                    if (field.type != fn_def.params[i].type orelse void) {
-                                        @compileError("Argument .@\"" ++ i ++ "\" expected type '" ++ @typeName(fn_def.params[i].type orelse void) ++ "'. Was '" ++ @typeName(field.type) ++ "'");
-                                    }
-                                }
-                            },
-                            else => @compileError("`function` must be a function type"),
-                        }
-                    }
-
                     const state_machine: *StateMachine(TError) = try allocator.create(StateMachine(TError));
                     errdefer allocator.destroy(state_machine);
                     state_machine.* = .{
@@ -619,7 +602,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                         },
                     };
 
-                    // keep it on single thread
+                    // keep it on single thread, nonblocking
                     const thread: Thread = try .spawn(
                         spawn_config,
                         eventLoop,
@@ -657,7 +640,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 fn eventLoop(self: *StateMachine(TError), comptime TArgs: type, worker: Worker(TArgs)) void {
                     while (self._internals.state != .complete and self._internals.err == null) {
                         if (self._internals.start_next) {
-                            worker.execute(self) catch |err| {
+                            worker.execute(&self._internals.state) catch |err| {
                                 self._internals.err = err;
                             };
                             self._internals.start_next = false;
@@ -665,7 +648,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
                 }
 
-                pub fn @"await"(self: *StateMachine(TError), err_out: *?TError, sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
+                pub fn awaitNext(self: *StateMachine(TError), err_out: *?TError, sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
                     const start_time: i64 = std.time.nanoTimestamp();
                     while (self._internals.state == .running and self._internals.err == null) {
                         Thread.sleep(sleep_ns);
@@ -680,7 +663,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
                 }
 
-                pub fn @"resume"(self: *StateMachine(TError)) void {
+                pub fn resumeExec(self: *StateMachine(TError)) void {
                     assert(!self._internals.start_next);
                     self._internals.start_next = true;
                 }
