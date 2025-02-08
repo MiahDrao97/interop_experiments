@@ -602,9 +602,17 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 else => @compileError("Expected error set type for TError. Was '" ++ @typeName(TError) ++ "'"),
             }
             return struct {
+                // WARN : Should I need to hide these? I kinda feel like I should...
                 state: State,
+                start_next: bool,
+                err: ?TError = null,
 
-                pub fn startNew(allocator: Allocator, spawn_config: SpawnConfig, function: fn (*State, anytype) TError!void, args: anytype) (Allocator.Error || Thread.SpawnError)!*const StateMachine(TError) {
+                pub fn startNew(
+                    allocator: Allocator,
+                    spawn_config: SpawnConfig,
+                    function: fn (*State, anytype) TError!void,
+                    args: anytype,
+                ) (Allocator.Error || Thread.SpawnError)!*StateMachine(TError) {
                     const ArgsType = @TypeOf(args);
                     comptime var struct_info: std.builtin.Type.Struct = undefined;
                     comptime var ReturnType: type = undefined;
@@ -627,16 +635,21 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
 
                     const state_machine: *StateMachine(TError) = try allocator.create(StateMachine(TError));
-                    state_machine.* = .{ .state = .suspended };
-
-                    const ctx = struct {
-                        pub fn eventLoop(self: *StateMachine(TError), worker: Worker(function, ArgsType, ReturnType)) TError!void {
-                            try worker.execute(self);
-                        }
-                    };
+                    state_machine.* = .{ .state = .suspended, .start_next = true };
 
                     // keep it on single thread
-                    const thread: Thread = try .spawn(spawn_config, ctx.eventLoop, .{ state_machine, Worker(function, ArgsType, ReturnType){ .args = args } });
+                    const thread: Thread = try .spawn(
+                        spawn_config,
+                        eventLoop,
+                        .{
+                            state_machine,
+                            ArgsType,
+                            Worker(ArgsType){
+                                .args = args,
+                                .func = function,
+                            },
+                        },
+                    );
                     thread.detach();
 
                     return state_machine;
@@ -659,9 +672,20 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     };
                 }
 
+                fn eventLoop(self: *StateMachine(TError), comptime ArgsType: type, worker: Worker(ArgsType)) void {
+                    while (self.state != .complete and self.err == null) {
+                        if (self.start_next) {
+                            worker.execute(self) catch |err| {
+                                self.err = err;
+                            };
+                            self.start_next = false;
+                        }
+                    }
+                }
+
                 pub fn wait(self: *StateMachine(TError), sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
                     const start_time: i64 = std.time.nanoTimestamp();
-                    while (self.state == .running) {
+                    while (self.state == .running and self.err == null) {
                         Thread.sleep(sleep_ns);
                         if (timeout_ns) |timeout| {
                             if (std.time.nanoTimestamp() - start_time > timeout) {
@@ -669,6 +693,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                             }
                         }
                     }
+                }
+
+                pub fn @"resume"(self: *StateMachine(TError)) void {
+                    assert(!self.start_next);
+                    self.start_next = true;
                 }
             };
         }
