@@ -482,7 +482,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         fn start(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
-            self.state_machine.awaitNext(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -492,7 +492,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.loading = .b;
             self.read_buffer = self.buf_a[0..self.next_len];
             self.cursor = 0;
-            self.state_machine.resumeExec();
+            self.state_machine.@"resume"();
         }
 
         fn callNextSegment(args: anytype, state: *State) error{ReadError}!void {
@@ -502,7 +502,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         fn switchBuf(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
-            self.state_machine.awaitNext(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -521,7 +521,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             };
 
             // get the next one started
-            self.state_machine.resumeExec();
+            self.state_machine.@"resume"();
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
@@ -566,7 +566,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 file.unlock();
             }
             file.close();
-            self.allocator.destroy(self.loading_thread);
             self.allocator.destroy(self);
         }
 
@@ -648,7 +647,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
                 }
 
-                pub fn awaitNext(self: *StateMachine(TError), err_out: *?TError, sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
+                pub fn @"await"(self: *StateMachine(TError), err_out: *?TError, sleep_ns: u64, timeout_ns: ?u64) error{Timeout}!void {
                     const start_time: i64 = std.time.nanoTimestamp();
                     while (self._internals.state == .running and self._internals.err == null) {
                         Thread.sleep(sleep_ns);
@@ -663,7 +662,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
                 }
 
-                pub fn resumeExec(self: *StateMachine(TError)) void {
+                pub fn @"resume"(self: *StateMachine(TError)) void {
                     assert(!self._internals.start_next);
                     self._internals.start_next = true;
                 }
