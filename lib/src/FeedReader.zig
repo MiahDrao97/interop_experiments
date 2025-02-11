@@ -455,8 +455,13 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 .reading = undefined,
                 .allocator = allocator,
             };
-            new_stream.state_machine = try .startNew(allocator, SpawnConfig{}, &callNextSegment, @intFromPtr(new_stream));
-            try new_stream.start();
+            new_stream.state_machine = try .new(allocator);
+            try new_stream.state_machine.startWorker(
+                SpawnConfig{},
+                callNextSegment,
+                new_stream,
+            );
+            try new_stream.firstSegment();
             return new_stream;
         }
 
@@ -474,7 +479,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             return self.read_buffer[self.cursor];
         }
 
-        fn start(self: *Self) error{ReadError}!void {
+        fn firstSegment(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
             self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
@@ -490,7 +495,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
 
         fn callNextSegment(state: *State, args: anytype) error{ReadError}!void {
-            const self: *Self = @ptrFromInt(args.@"0");
+            const self: *Self = args;
             try self.nextSegment(self.loading, state);
         }
 
@@ -563,19 +568,18 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.allocator.destroy(self);
         }
 
-        fn Worker(comptime TArgs: type, comptime TError: type) type {
+        fn Worker(comptime TArgs: type, comptime TError: type, function: fn (*State, anytype) TError!void) type {
             return struct {
                 args: TArgs,
-                function: *const fn (*State, anytype) TError!void,
 
-                pub fn execute(self: Worker(TArgs, TError), ext_state: *State) TError!void {
+                pub fn execute(self: *const Worker(TArgs, TError, function), ext_state: *State) TError!void {
                     ext_state.* = .running;
                     defer {
                         if (ext_state.* == .running) {
                             ext_state.* = .suspended;
                         }
                     }
-                    try self.function(ext_state, self.args);
+                    try function(ext_state, self.args);
                 }
             };
         }
@@ -595,12 +599,9 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     err: ?TError = null,
                 };
 
-                pub fn startNew(
+                pub fn new(
                     allocator: Allocator,
-                    spawn_config: SpawnConfig,
-                    function: *const fn (*State, anytype) TError!void,
-                    args: anytype,
-                ) (Allocator.Error || Thread.SpawnError)!*StateMachine(TError) {
+                ) Allocator.Error!*StateMachine(TError) {
                     const state_machine: *StateMachine(TError) = try allocator.create(StateMachine(TError));
                     errdefer allocator.destroy(state_machine);
                     state_machine.* = .{
@@ -611,20 +612,36 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                         },
                     };
 
-                    @compileLog("Args type: " ++ @typeName(@TypeOf(args)));
-                    const worker: Worker(@TypeOf(args), TError) = .{
-                        .args = args,
-                        .function = function,
-                    };
-                    // keep it on single thread, nonblocking
-                    const thread: Thread = try .spawn(spawn_config, eventLoop, .{ state_machine, worker });
-                    thread.detach();
-
                     return state_machine;
                 }
 
-                fn eventLoop(self: *StateMachine(TError), worker: anytype) void {
+                pub fn startWorker(
+                    self: *StateMachine(TError),
+                    spawn_config: SpawnConfig,
+                    function: fn (*State, anytype) TError!void,
+                    args: anytype,
+                ) (Allocator.Error || Thread.SpawnError)!void {
+                    assert(self._internals.start_next);
+                    assert(self._internals.state != .running);
+
+                    const ArgsType = @TypeOf(args);
+                    const worker: Worker(ArgsType, TError, function) = .{ .args = args };
+
+                    self._internals.state = .running;
+                    // keep it on single thread, nonblocking
+                    const thread: Thread = try .spawn(spawn_config, eventLoop, .{ self, ArgsType, function, worker });
+                    thread.detach();
+                }
+
+                fn eventLoop(
+                    self: *StateMachine(TError),
+                    comptime TArgs: type,
+                    function: fn (*State, anytype) TError!void,
+                    worker: Worker(TArgs, TError, function),
+                ) void {
+                    var i: usize = 0;
                     while (self._internals.state != .complete and self._internals.err == null) {
+                        defer i += 1;
                         if (self._internals.start_next) {
                             worker.execute(&self._internals.state) catch |err| {
                                 self._internals.err = err;
@@ -656,6 +673,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
                 pub fn @"resume"(self: *StateMachine(TError)) void {
                     assert(!self._internals.start_next);
+                    self._internals.state = .running;
                     self._internals.start_next = true;
                 }
 
