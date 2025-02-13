@@ -53,42 +53,42 @@ public class Benchmarks
 
         Console.WriteLine();
         Console.WriteLine("Zig Open File Duration (ms):");
-        Console.WriteLine(" --------------------------------------");
-        Console.WriteLine("|        Avg |        Min |        Max |");
-        Console.WriteLine(" --------------------------------------");
-        Console.WriteLine($"| {_zigOpenFileDurations.Avg():F6} | {_zigOpenFileDurations.Min():F6} | {_zigOpenFileDurations.Max():F6} |");
-        Console.WriteLine(" --------------------------------------");
+        Console.WriteLine(" --------------------------------------------------");
+        Console.WriteLine("|       Med |        Avg |        Min |        Max |");
+        Console.WriteLine(" --------------------------------------------------");
+        Console.WriteLine($"| {_zigOpenFileDurations.Median():F6} | {_zigOpenFileDurations.Avg():F6} | {_zigOpenFileDurations.Min():F6} | {_zigOpenFileDurations.Max():F6} |");
+        Console.WriteLine(" --------------------------------------------------");
         Console.WriteLine();
 
         foreach (KeyValuePair<int, Stats<double>> stat in _zigDurations)
         {
             Console.WriteLine($"Zig Total Scan Duration of {stat.Key} Scans (ms):");
-            Console.WriteLine(" --------------------------------------");
-            Console.WriteLine("|        Avg |        Min |        Max |");
-            Console.WriteLine(" --------------------------------------");
-            Console.WriteLine($"| {stat.Value.Avg():F6} | {stat.Value.Min():F6} | {stat.Value.Max():F6} |");
-            Console.WriteLine(" --------------------------------------");
+            Console.WriteLine(" --------------------------------------------------");
+            Console.WriteLine("|       Med |        Avg |        Min |        Max |");
+            Console.WriteLine(" --------------------------------------------------");
+            Console.WriteLine($"| {stat.Value.Median():F6} | {stat.Value.Avg():F6} | {stat.Value.Min():F6} | {stat.Value.Max():F6} |");
+            Console.WriteLine(" --------------------------------------------------");
         }
         Console.WriteLine();
         Console.WriteLine("***************************************");
 
 
         Console.WriteLine("C# Open File Duration (ms):");
-        Console.WriteLine(" --------------------------------------");
-        Console.WriteLine("|        Avg |        Min |        Max |");
-        Console.WriteLine(" --------------------------------------");
-        Console.WriteLine($"| {_csharpOpenFileDurations.Avg():F6} | {_csharpOpenFileDurations.Min():F6} | {_csharpOpenFileDurations.Max():F6} |");
-        Console.WriteLine(" --------------------------------------");
+        Console.WriteLine(" --------------------------------------------------");
+        Console.WriteLine("|       Med |        Avg |        Min |        Max |");
+        Console.WriteLine(" --------------------------------------------------");
+        Console.WriteLine($"| {_csharpOpenFileDurations.Median():F6} | {_csharpOpenFileDurations.Avg():F6} | {_csharpOpenFileDurations.Min():F6} | {_csharpOpenFileDurations.Max():F6} |");
+        Console.WriteLine(" --------------------------------------------------");
         Console.WriteLine();
 
         foreach (KeyValuePair<int, Stats<double>> stat in _csharpDurations)
         {
             Console.WriteLine($"C# Total Scan Duration of {stat.Key} Scans (ms):");
-            Console.WriteLine(" --------------------------------------");
-            Console.WriteLine("|        Avg |        Min |        Max |");
-            Console.WriteLine(" --------------------------------------");
-            Console.WriteLine($"| {stat.Value.Avg():F6} | {stat.Value.Min():F6} | {stat.Value.Max():F6} |");
-            Console.WriteLine(" --------------------------------------");
+            Console.WriteLine(" --------------------------------------------------");
+            Console.WriteLine("|       Med |        Avg |        Min |        Max |");
+            Console.WriteLine(" --------------------------------------------------");
+            Console.WriteLine($"| {stat.Value.Median():F6} | {stat.Value.Avg():F6} | {stat.Value.Min():F6} | {stat.Value.Max():F6} |");
+            Console.WriteLine(" --------------------------------------------------");
         }
         Console.WriteLine();
     }
@@ -151,6 +151,8 @@ public class Benchmarks
             }
             return sum / RunCount;
         }
+
+        public T Median() => _list.OrderBy(static x => x).ToArray()[_list.Count / 2];
 
         public T Max() => _list.Max()!;
 
