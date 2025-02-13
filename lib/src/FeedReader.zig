@@ -15,6 +15,7 @@ const fd_t = posix.fd_t;
 const Thread = std.Thread;
 const SpawnConfig = Thread.SpawnConfig;
 const assert = std.debug.assert;
+const Atomic = std.atomic.Value;
 
 /// Arena allocator used to parse each JSON object
 arena: ArenaAllocator,
@@ -435,7 +436,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         on_final: bool = false,
 
         const BufferId = enum(u1) { a = 0, b = 1 };
-        const State = enum { running, suspended, complete };
+        const State = enum(u8) { running, suspended, complete };
         const Self = @This();
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
@@ -494,7 +495,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.state_machine.@"resume"();
         }
 
-        fn callNextSegment(state: *State, args: anytype) error{ReadError}!void {
+        fn callNextSegment(state: *Atomic(State), args: anytype) error{ReadError}!void {
             const self: *Self = args;
             try self.nextSegment(self.loading, state);
         }
@@ -524,11 +525,10 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
-        fn nextSegment(self: *Self, load_buf: BufferId, state: *State) error{ReadError}!void {
-            assert(state.* == .running);
+        fn nextSegment(self: *Self, load_buf: BufferId, state: *Atomic(State)) error{ReadError}!void {
             defer {
                 if (self.on_final) {
-                    state.* = .complete;
+                    state.store(.complete, .release);
                 }
             }
 
@@ -568,15 +568,15 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.allocator.destroy(self);
         }
 
-        fn Worker(comptime TArgs: type, comptime TError: type, function: fn (*State, anytype) TError!void) type {
+        fn Worker(comptime TArgs: type, comptime TError: type, function: fn (*Atomic(State), anytype) TError!void) type {
             return struct {
                 args: TArgs,
 
-                pub fn execute(self: *const Worker(TArgs, TError, function), ext_state: *State) TError!void {
-                    ext_state.* = .running;
+                pub fn execute(self: *const Worker(TArgs, TError, function), ext_state: *Atomic(State)) TError!void {
+                    ext_state.store(.running, .release);
                     defer {
-                        if (ext_state.* == .running) {
-                            ext_state.* = .suspended;
+                        if (ext_state.load(.monotonic) == .running) {
+                            ext_state.store(.suspended, .release);
                         }
                     }
                     try function(ext_state, self.args);
@@ -594,7 +594,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 _internals: Internals,
 
                 const Internals = struct {
-                    state: State,
+                    state: Atomic(State),
                     start_next: bool,
                     err: ?TError = null,
                 };
@@ -607,7 +607,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     state_machine.* = .{
                         .allocator = allocator,
                         ._internals = Internals{
-                            .state = .suspended,
+                            .state = .init(.suspended),
                             .start_next = true,
                         },
                     };
@@ -618,16 +618,16 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 pub fn startWorker(
                     self: *StateMachine(TError),
                     spawn_config: SpawnConfig,
-                    function: fn (*State, anytype) TError!void,
+                    function: fn (*Atomic(State), anytype) TError!void,
                     args: anytype,
                 ) (Allocator.Error || Thread.SpawnError)!void {
                     assert(self._internals.start_next);
-                    assert(self._internals.state != .running);
+                    assert(self._internals.state.load(.acquire) != .running);
 
                     const ArgsType = @TypeOf(args);
                     const worker: Worker(ArgsType, TError, function) = .{ .args = args };
 
-                    self._internals.state = .running;
+                    self._internals.state.store(.running, .release);
                     // keep it on single thread, nonblocking
                     const thread: Thread = try .spawn(spawn_config, eventLoop, .{ self, ArgsType, function, worker });
                     thread.detach();
@@ -636,11 +636,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 fn eventLoop(
                     self: *StateMachine(TError),
                     comptime TArgs: type,
-                    function: fn (*State, anytype) TError!void,
+                    function: fn (*Atomic(State), anytype) TError!void,
                     worker: Worker(TArgs, TError, function),
                 ) void {
                     var i: usize = 0;
-                    while (self._internals.state != .complete and self._internals.err == null) {
+                    while (self._internals.state.load(.monotonic) != .complete and self._internals.err == null) {
                         defer i += 1;
                         if (self._internals.start_next) {
                             worker.execute(&self._internals.state) catch |err| {
@@ -658,7 +658,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     timeout_ns: ?u64,
                 ) error{Timeout}!void {
                     const start_time: i128 = std.time.nanoTimestamp();
-                    while (self._internals.state == .running and self._internals.err == null) {
+                    while (self._internals.state.load(.monotonic) == .running and self._internals.err == null) {
                         Thread.sleep(sleep_ns);
                         if (timeout_ns) |timeout| {
                             if (std.time.nanoTimestamp() - start_time > timeout) {
@@ -673,17 +673,17 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
                 pub fn @"resume"(self: *StateMachine(TError)) void {
                     assert(!self._internals.start_next);
-                    self._internals.state = .running;
+                    self._internals.state.store(.running, .release);
                     self._internals.start_next = true;
                 }
 
                 pub fn cancel(self: *StateMachine(TError)) void {
-                    while (self._internals.state == .running) {}
-                    self._internals.state = .complete;
+                    while (self._internals.state.load(.monotonic) == .running) {}
+                    self._internals.state.store(.complete, .release);
                 }
 
                 pub fn getState(self: *StateMachine(TError)) *const State {
-                    return &self._internals.state;
+                    return &self._internals.state.load(.monotonic);
                 }
 
                 pub fn hasError(self: *StateMachine(TError)) ?TError {
