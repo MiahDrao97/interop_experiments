@@ -419,7 +419,6 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         /// Set when reading the next buffer to indicate how long `read_buffer` will be on switch
         next_len: usize = 0,
         /// Cursor on the `read_buffer`.
-        /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
         cursor: usize = 0,
         /// Which buffer we're reading
         reading: BufferId,
@@ -622,7 +621,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     args: anytype,
                 ) (Allocator.Error || Thread.SpawnError)!void {
                     assert(self._internals.start_next);
-                    assert(self._internals.state.load(.acquire) != .running);
+                    assert(self.getState() != .running);
 
                     const ArgsType = @TypeOf(args);
                     const worker: Worker(ArgsType, TError, function) = .{ .args = args };
@@ -640,7 +639,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     worker: Worker(TArgs, TError, function),
                 ) void {
                     var i: usize = 0;
-                    while (self._internals.state.load(.monotonic) != .complete and self._internals.err == null) {
+                    while (self.getState() != .complete and self._internals.err == null) {
                         defer i += 1;
                         if (self._internals.start_next) {
                             worker.execute(&self._internals.state) catch |err| {
@@ -658,7 +657,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     timeout_ns: ?u64,
                 ) error{Timeout}!void {
                     const start_time: i128 = std.time.nanoTimestamp();
-                    while (self._internals.state.load(.monotonic) == .running and self._internals.err == null) {
+                    while (self.getState() == .running and self._internals.err == null) {
                         Thread.sleep(sleep_ns);
                         if (timeout_ns) |timeout| {
                             if (std.time.nanoTimestamp() - start_time > timeout) {
@@ -678,12 +677,12 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 }
 
                 pub fn cancel(self: *StateMachine(TError)) void {
-                    while (self._internals.state.load(.monotonic) == .running) {}
+                    while (self.getState() == .running) {}
                     self._internals.state.store(.complete, .release);
                 }
 
-                pub fn getState(self: *StateMachine(TError)) *const State {
-                    return &self._internals.state.load(.monotonic);
+                pub fn getState(self: *StateMachine(TError)) State {
+                    return self._internals.state.load(.monotonic);
                 }
 
                 pub fn hasError(self: *StateMachine(TError)) ?TError {
