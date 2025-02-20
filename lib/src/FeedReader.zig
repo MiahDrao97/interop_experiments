@@ -24,7 +24,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: *DualBufferFileStream(8192),
+file_stream: FileStream(8192),
 
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
@@ -34,11 +34,11 @@ const FeedReader = @This();
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
+pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
     return .{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
-        .file_stream = try .startNew(allocator, file, with_file_lock),
+        .file_stream = .init(file, with_file_lock),
     };
 }
 
