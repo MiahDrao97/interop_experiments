@@ -20,7 +20,7 @@ var gpa: GeneralPurposeAllocator(.{}) = .init;
 var alloc: Allocator = gpa.allocator();
 
 /// Expose those global so that test cases can fully deinit the arena so we pass tests without memory leaks
-var reset_mode: ResetMode = .{ .retain_with_limit = 40_000_000 };
+var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
 
 /// Open a file from the USPS feeder, returning a status code for the operation.
 ///     `file_path` is a null-terminated string.
