@@ -20,10 +20,7 @@ var gpa: GeneralPurposeAllocator(.{}) = .init;
 var alloc: Allocator = gpa.allocator();
 
 /// Expose those global so that test cases can fully deinit the arena so we pass tests without memory leaks
-var reset_mode: ResetMode = .retain_capacity;
-
-/// Expose this global as the theshold before we determine that we need to free all of the memory we've allocated (as opposed to simply retaining and reusing it on file close)
-var reset_threshold: usize = 4_000_000;
+var reset_mode: ResetMode = .{ .retain_with_limit = 40_000_000 };
 
 /// Open a file from the USPS feeder, returning a status code for the operation.
 ///     `file_path` is a null-terminated string.
@@ -72,7 +69,7 @@ export fn nextScan() ScanResult {
 export fn close() void {
     if (reader) |*current_reader| {
         // intentionally hold on to our pre-allocated memory
-        current_reader.deinit(reset_mode, reset_threshold);
+        current_reader.deinit(reset_mode);
         reader = null;
     }
 }

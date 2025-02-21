@@ -316,15 +316,9 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
 ///     `self`: method receiver
 ///     `reset_mode`: reset the allocator with this reset strategy if the used capacity falls under the `deinit_threshold`
 ///     `deinit_threshold`: if the arena's memory usage exceeds this amount, we will free everything rather than attempting to retain anything
-pub fn deinit(self: *FeedReader, reset_mode: ResetMode, deinit_threshold: usize) void {
+pub fn deinit(self: *FeedReader, reset_mode: ResetMode) void {
     self.file_stream.close();
-    const capacity: usize = self.arena.queryCapacity();
-    if (capacity < deinit_threshold) {
-        _ = self.arena.reset(reset_mode);
-    } else {
-        std.debug.print("Arena's capacity is {d}, which exceeds {d} bytes. Freeing all memory...", .{ capacity, deinit_threshold });
-        self.arena.deinit();
-    }
+    _ = self.arena.reset(reset_mode);
 }
 
 /// Tracks basic data about where we are in the open file
