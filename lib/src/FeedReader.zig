@@ -2,6 +2,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const ResetMode = ArenaAllocator.ResetMode;
 const File = std.fs.File;
 const AnyReader = std.io.AnyReader;
 const Parsed = json.Parsed;
@@ -312,9 +313,18 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
 }
 
 /// Destroys the arena and all memory it allocated. Also closes the file stream.
-pub fn deinit(self: *FeedReader) void {
+///     `self`: method receiver
+///     `reset_mode`: reset the allocator with this reset strategy if the used capacity falls under the `deinit_threshold`
+///     `deinit_threshold`: if the arena's memory usage exceeds this amount, we will free everything rather than attempting to retain anything
+pub fn deinit(self: *FeedReader, reset_mode: ResetMode, deinit_threshold: usize) void {
     self.file_stream.close();
-    self.arena.deinit();
+    const capacity: usize = self.arena.queryCapacity();
+    if (capacity < deinit_threshold) {
+        _ = self.arena.reset(reset_mode);
+    } else {
+        std.debug.print("Arena's capacity is {d}, which exceeds {d} bytes. Freeing all memory...", .{ capacity, deinit_threshold });
+        self.arena.deinit();
+    }
 }
 
 /// Tracks basic data about where we are in the open file

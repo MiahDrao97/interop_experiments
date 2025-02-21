@@ -8,6 +8,7 @@ const File = std.fs.File;
 const FeedReader = @import("FeedReader.zig");
 const ScanResult = FeedReader.ScanResult;
 const ReadScanStatus = FeedReader.ReadScanStatus;
+const ResetMode = std.heap.ArenaAllocator.ResetMode;
 
 /// Static reader that is unique to each thread
 threadlocal var reader: ?FeedReader = null;
@@ -17,6 +18,12 @@ var gpa: GeneralPurposeAllocator(.{}) = .init;
 
 /// I exposed this global so that it can set in unit testing to detect memory leaks
 var alloc: Allocator = gpa.allocator();
+
+/// Expose those global so that test cases can fully deinit the arena so we pass tests without memory leaks
+var reset_mode: ResetMode = .retain_capacity;
+
+/// Expose this global as the theshold before we determine that we need to free all of the memory we've allocated (as opposed to simply retaining and reusing it on file close)
+var reset_threshold: usize = 4_000_000;
 
 /// Open a file from the USPS feeder, returning a status code for the operation.
 ///     `file_path` is a null-terminated string.
@@ -64,7 +71,8 @@ export fn nextScan() ScanResult {
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
     if (reader) |*current_reader| {
-        current_reader.deinit();
+        // intentionally hold on to our pre-allocated memory
+        current_reader.deinit(reset_mode, reset_threshold);
         reader = null;
     }
 }
@@ -84,13 +92,12 @@ pub const NewReaderResult = enum(i32) {
 test "success case" {
     // switch to testing allocator to detect memory leaks
     alloc = testing.allocator;
+    // free all so that we don't retain memory at the end of this test
+    reset_mode = .free_all;
     testing.log_level = .debug;
 
     const result: NewReaderResult = open("test_feed.json");
-    defer {
-        close();
-        log.debug("We closed here!", .{});
-    }
+    defer close();
 
     try testing.expectEqual(.opened, result);
     try testing.expect(reader != null);
