@@ -26,7 +26,7 @@ telemetry: Telemetry,
 /// The file stream we're reading from
 file_stream: FileStream(8192),
 
-/// This structure represents the reader that does the actual parser of the feed file.
+/// This structure represents the reader that does the actual parsing of the feed file.
 const FeedReader = @This();
 
 /// Key on the JSON object that holds the events array
@@ -452,12 +452,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             new_stream.* = .{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
-                .state_machine = undefined,
+                .state_machine = try .new(allocator),
                 .loading = .a,
                 .reading = undefined,
                 .allocator = allocator,
             };
-            new_stream.state_machine = try .new(allocator);
             try new_stream.state_machine.startWorker(
                 SpawnConfig{},
                 callNextSegment,
