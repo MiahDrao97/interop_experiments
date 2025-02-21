@@ -25,7 +25,7 @@ open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: FileStream(8192),
+file_stream: *DualBufferFileStream(8192),
 
 /// This structure represents the reader that does the actual parsing of the feed file.
 const FeedReader = @This();
@@ -38,11 +38,11 @@ const events_key: []const u8 = "events";
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) FeedReader {
+pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
     return .{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
-        .file_stream = .init(file, with_file_lock),
+        .file_stream = try .startNew(allocator, file, with_file_lock),
     };
 }
 
@@ -563,7 +563,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         /// Close the file and unlock it if `file_locked`
         pub fn close(self: *Self) void {
-            self.state_machine.deinit(1100);
+            self.state_machine.deinit();
             const file: File = .{ .handle = self.file_handle };
             if (self.file_locked) {
                 file.unlock();
@@ -647,10 +647,10 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     while (self.getState() != .complete and self._internals.err == null) {
                         defer i += 1;
                         if (self._internals.start_next) {
+                            self._internals.start_next = false;
                             worker.execute(&self._internals.state) catch |err| {
                                 self._internals.err = err;
                             };
-                            self._internals.start_next = false;
                         }
                     }
                 }
@@ -682,8 +682,8 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 }
 
                 pub fn cancel(self: *StateMachine(TError)) void {
-                    while (self.getState() == .running) {}
-                    self._internals.state.store(.complete, .release);
+                    // strongest atomic ordering to complete
+                    self._internals.state.store(.complete, .seq_cst);
                 }
 
                 pub fn getState(self: *StateMachine(TError)) State {
@@ -694,9 +694,8 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     return self._internals.err;
                 }
 
-                pub fn deinit(self: *StateMachine(TError), sleep_ns: u64) void {
+                pub fn deinit(self: *StateMachine(TError)) void {
                     self.cancel();
-                    Thread.sleep(sleep_ns); // sleep for the thread to realize that we're done
                     self.allocator.destroy(self);
                 }
             };

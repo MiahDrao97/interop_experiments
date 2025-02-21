@@ -19,7 +19,7 @@ var gpa: GeneralPurposeAllocator(.{}) = .init;
 /// I exposed this global so that it can set in unit testing to detect memory leaks
 var alloc: Allocator = gpa.allocator();
 
-/// Expose those global so that test cases can fully deinit the arena so we pass tests without memory leaks
+/// Expose this global so that test cases can fully deinit the arena so we pass tests without memory leaks
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
 
 /// Open a file from the USPS feeder, returning a status code for the operation.
@@ -38,6 +38,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
+            @branchHint(.unlikely);
             log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
@@ -46,6 +47,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
+            @branchHint(.unlikely);
             log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
@@ -53,7 +55,19 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     const open_end: i64 = std.time.microTimestamp();
     std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
 
-    reader = .open(alloc, file, mem.sliceTo(file_path, 0), false);
+    reader = FeedReader.open(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
+        @branchHint(.cold);
+        switch (err) {
+            Allocator.Error.OutOfMemory => {
+                log.err("Out of memory. Last allocation: {?}", .{@errorReturnTrace()});
+                return .outOfMemory;
+            },
+            else => {
+                log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+                return .failedToOpen;
+            },
+        }
+    };
     return .opened;
 }
 
@@ -91,6 +105,7 @@ test "success case" {
     alloc = testing.allocator;
     // free all so that we don't retain memory at the end of this test
     reset_mode = .free_all;
+    // enable debug logs for this test case
     testing.log_level = .debug;
 
     const result: NewReaderResult = open("test_feed.json");
