@@ -29,6 +29,9 @@ file_stream: FileStream(8192),
 /// This structure represents the reader that does the actual parser of the feed file.
 const FeedReader = @This();
 
+/// Key on the JSON object that holds the events array
+const events_key: []const u8 = "events";
+
 /// Open a new `FeedReader`
 ///     `allocator` - used to back the arena
 ///     `file` - contains the file handler that we'll use for the file stream
@@ -110,7 +113,6 @@ pub fn nextScan(self: *FeedReader) ScanResult {
 
 /// Parse until the "events" field
 fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
-    const key: []const u8 = "events";
     var inside_quotes: bool = false;
     var idx: usize = 0;
     var inside_events: bool = false;
@@ -140,10 +142,10 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
         }
 
         if (inside_quotes) {
-            if (idx < key.len) {
-                if (byte == key[idx]) {
+            if (idx < events_key.len) {
+                if (byte == events_key[idx]) {
                     idx += 1;
-                    if (idx == key.len) {
+                    if (idx == events_key.len) {
                         inside_events = true;
                         log.debug("Found \"events\" field at '{s}', line {d}, pos {d}", .{
                             self.telemetry.file_path,
