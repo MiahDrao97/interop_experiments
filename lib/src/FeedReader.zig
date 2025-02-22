@@ -312,10 +312,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
     return buf[0..i];
 }
 
-/// Destroys the arena and all memory it allocated. Also closes the file stream.
-///     `self`: method receiver
-///     `reset_mode`: reset the allocator with this reset strategy if the used capacity falls under the `deinit_threshold`
-///     `deinit_threshold`: if the arena's memory usage exceeds this amount, we will free everything rather than attempting to retain anything
+/// Free memory or reset the arena to retain some/all capacity
 pub fn deinit(self: *FeedReader, reset_mode: ResetMode) void {
     self.file_stream.close();
     _ = self.arena.reset(reset_mode);
@@ -576,7 +573,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             return struct {
                 args: TArgs,
 
-                pub fn execute(self: *const Worker(TArgs, TError, function), ext_state: *Atomic(State)) TError!void {
+                pub fn execute(self: *const @This(), ext_state: *Atomic(State)) TError!void {
                     ext_state.store(.running, .release);
                     defer {
                         if (ext_state.load(.monotonic) == .running) {
