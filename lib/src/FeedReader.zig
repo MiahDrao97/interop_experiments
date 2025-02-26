@@ -39,7 +39,7 @@ const events_key: []const u8 = "events";
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
 pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
-    return .{
+    return FeedReader{
         .arena = .init(allocator),
         .telemetry = .init(file_path),
         .file_stream = try .startNew(allocator, file, with_file_lock),
@@ -450,7 +450,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             const new_stream: *Self = try allocator.create(Self);
             errdefer allocator.destroy(new_stream);
 
-            new_stream.* = .{
+            new_stream.* = Self{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
                 .state_machine = try .new(allocator),

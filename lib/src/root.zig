@@ -3,7 +3,6 @@ const testing = std.testing;
 const log = std.log;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const GeneralPurposeAllocator = std.heap.GeneralPurposeAllocator;
 const File = std.fs.File;
 const FeedReader = @import("FeedReader.zig");
 const ScanResult = FeedReader.ScanResult;
@@ -13,11 +12,8 @@ const ResetMode = std.heap.ArenaAllocator.ResetMode;
 /// Static reader that is unique to each thread
 threadlocal var reader: ?FeedReader = null;
 
-/// The global allocator we're using
-var gpa: GeneralPurposeAllocator(.{}) = .init;
-
 /// I exposed this global so that it can set in unit testing to detect memory leaks
-var alloc: Allocator = gpa.allocator();
+var alloc: Allocator = std.heap.smp_allocator;
 
 /// Expose this global so that test cases can fully deinit the arena so we pass tests without memory leaks
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
