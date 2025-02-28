@@ -3,6 +3,7 @@ const testing = std.testing;
 const log = std.log;
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const DebugAllocator = std.heap.DebugAllocator;
 const File = std.fs.File;
 const FeedReader = @import("FeedReader.zig");
 const ScanResult = FeedReader.ScanResult;
@@ -12,8 +13,14 @@ const ResetMode = std.heap.ArenaAllocator.ResetMode;
 /// Static reader that is unique to each thread
 threadlocal var reader: ?FeedReader = null;
 
+var debug_allocator: DebugAllocator(.{}) = .init;
+
 /// I exposed this global so that it can set in unit testing to detect memory leaks
-var alloc: Allocator = std.heap.smp_allocator;
+var alloc: Allocator = switch (@import("builtin").mode) {
+    .Debug => debug_allocator.allocator(),
+    .ReleaseSmall => std.heap.c_allocator,
+    else => std.heap.smp_allocator,
+};
 
 /// Expose this global so that test cases can fully deinit the arena so we pass tests without memory leaks
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
@@ -28,6 +35,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     }
 
     const open_start: i64 = std.time.microTimestamp();
+
     var file: File = undefined;
     if (std.fs.path.isAbsoluteZ(file_path)) {
         file = std.fs.openFileAbsoluteZ(
@@ -48,8 +56,6 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             return .failedToOpen;
         };
     }
-    const open_end: i64 = std.time.microTimestamp();
-    std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
 
     reader = FeedReader.open(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
         @branchHint(.cold);
@@ -64,6 +70,10 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             },
         }
     };
+
+    const open_end: i64 = std.time.microTimestamp();
+    std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
+
     return .opened;
 }
 
