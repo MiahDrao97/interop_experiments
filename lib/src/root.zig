@@ -3,6 +3,7 @@ const testing = std.testing;
 const log = std.log;
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const DebugAllocator = std.heap.DebugAllocator;
 const File = std.fs.File;
 const FeedReader = @import("FeedReader.zig");
@@ -11,8 +12,12 @@ const ReadScanStatus = FeedReader.ReadScanStatus;
 const ResetMode = std.heap.ArenaAllocator.ResetMode;
 
 /// Static reader that is unique to each thread
-threadlocal var reader: ?FeedReader = null;
+threadlocal var reader: ?*FeedReader = null;
 
+/// Arena allocator that will get passed to the `reader`
+threadlocal var arena: ?ArenaAllocator = null;
+
+/// Allocator used in debug mode
 var debug_allocator: DebugAllocator(.{}) = .init;
 
 /// I exposed this global so that it can set in unit testing to detect memory leaks
@@ -57,7 +62,8 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         };
     }
 
-    reader = FeedReader.open(alloc, file, mem.sliceTo(file_path, 0), false) catch |err| {
+    arena = .init(alloc);
+    reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| {
         @branchHint(.cold);
         switch (err) {
             Allocator.Error.OutOfMemory => {
@@ -79,7 +85,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
 
 /// Get the next scan, EOF, or an error if we cannot read it.
 export fn nextScan() ScanResult {
-    if (reader) |*current_reader| {
+    if (reader) |current_reader| {
         return current_reader.nextScan();
     }
     return .err(.noActiveReader);
@@ -87,10 +93,12 @@ export fn nextScan() ScanResult {
 
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
-    if (reader) |*current_reader| {
+    if (reader) |current_reader| {
+        current_reader.file_stream.close();
         // intentionally hold on to our pre-allocated memory
-        current_reader.deinit(reset_mode);
+        _ = arena.?.reset(reset_mode);
         reader = null;
+        arena = null;
     }
 }
 

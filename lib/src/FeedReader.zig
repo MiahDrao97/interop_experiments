@@ -19,13 +19,13 @@ const assert = std.debug.assert;
 const Atomic = std.atomic.Value;
 
 /// Arena allocator used to parse each JSON object
-arena: ArenaAllocator,
+arena: *ArenaAllocator,
 /// Indicates that we've parsed the "events" field and are parsing the JSON objects in that array
 open_events: bool = false,
 /// Track the file's name, line, and position through debug statements and error logs
 telemetry: Telemetry,
 /// The file stream we're reading from
-file_stream: *DualBufferFileStream(8192),
+file_stream: AsyncFileStream,
 
 /// This structure represents the reader that does the actual parsing of the feed file.
 const FeedReader = @This();
@@ -34,16 +34,23 @@ const FeedReader = @This();
 const events_key: []const u8 = "events";
 
 /// Open a new `FeedReader`
-///     `allocator` - used to back the arena
+///     `arena` - arena allocator
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn open(allocator: Allocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !FeedReader {
-    return FeedReader{
-        .arena = .init(allocator),
+pub fn open(arena: *ArenaAllocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !*FeedReader {
+    const feed_reader: *FeedReader = try arena.allocator().create(FeedReader);
+    errdefer arena.allocator().destroy(feed_reader);
+    feed_reader.* = .{
+        .arena = arena,
         .telemetry = .init(file_path),
-        .file_stream = try .startNew(allocator, file, with_file_lock),
+        .file_stream = .init(arena.allocator(), file, with_file_lock),
     };
+
+    const read_thread: Thread = try feed_reader.file_stream.startRead();
+    read_thread.detach();
+
+    return feed_reader;
 }
 
 /// Get the next scan result
@@ -113,7 +120,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
 }
 
 /// Parse until the "events" field
-fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
+fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadError }!void {
     var inside_quotes: bool = false;
     var idx: usize = 0;
     var inside_events: bool = false;
@@ -176,12 +183,12 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
             @errorName(err),
             @errorReturnTrace(),
         });
-        return error.InvalidFileFormat;
+        return error.ReadError;
     }
 }
 
 /// Parse until the open square brack ('['). After this, we'll be ready to start parsing objects out of the array.
-fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
+fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadError }!void {
     while (self.file_stream.nextByte()) |byte| {
         if (byte == null) {
             return error.EndOfStream;
@@ -220,12 +227,12 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat }!void {
             @errorName(err),
             @errorReturnTrace(),
         });
-        return error.InvalidFileFormat;
+        return error.ReadError;
     }
 }
 
 /// Parse next JSON object in our file stream, outputting the bytes read to `buf`
-fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated, BufferOverflow }!?[]const u8 {
+fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated, BufferOverflow, ReadError }!?[]const u8 {
     var open_brace: bool = false;
     var close_brace: bool = false;
     var inside_quotes: bool = false;
@@ -303,7 +310,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
             @errorName(err),
             @errorReturnTrace(),
         });
-        return error.InvalidFormat;
+        return error.ReadError;
     }
 
     if (!close_brace) {
@@ -699,6 +706,80 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
         }
     };
 }
+
+/// File stream that loads the entire file into heap memory on another thread
+const AsyncFileStream = struct {
+    /// File handle
+    file_handle: fd_t,
+    /// File opened with lock (needs to be unlocked on close)
+    with_lock: bool,
+    /// Whether or not the file has been read (starts as false)
+    /// WARN : Please don't touch this field
+    _file_read: Atomic(bool),
+    /// Error encountered while reading
+    err: ?anyerror = null,
+    /// Position we're at in the file stream
+    cursor: usize = 0,
+    /// Contents of the file
+    contents: []u8,
+    /// Allocator
+    allocator: Allocator,
+
+    /// Initialize a new `AsyncFileStream` with an allocator, file, and whether or not the file was opened with a lock
+    pub fn init(allocator: Allocator, file: File, with_lock: bool) AsyncFileStream {
+        return .{
+            .file_handle = file.handle,
+            .with_lock = with_lock,
+            ._file_read = .init(false),
+            .contents = undefined,
+            .allocator = allocator,
+        };
+    }
+
+    /// Start reading the file (returns the thread performing the operation)
+    pub fn startRead(self: *AsyncFileStream) Thread.SpawnError!Thread {
+        return try Thread.spawn(.{}, read, .{self});
+    }
+
+    fn read(self: *AsyncFileStream) !void {
+        defer {
+            self._file_read.store(true, .release);
+            log.info("Finished reading file", .{});
+        }
+        errdefer |e| self.err = e;
+
+        const file: File = .{ .handle = self.file_handle };
+        const reader: AnyReader = file.reader().any();
+
+        // TODO : What max size do we wanna handle? Should we do some chunking after a certain threshold?
+        self.contents = try reader.readAllAlloc(self.allocator, std.math.maxInt(usize));
+    }
+
+    /// Get the next byte (has to wait while the file is being read)
+    pub fn nextByte(self: *AsyncFileStream) !?u8 {
+        while (self._file_read.load(.monotonic) == false) {}
+        if (self.err) |e| {
+            return e;
+        }
+
+        if (self.cursor >= self.contents.len) {
+            return null;
+        }
+
+        defer self.cursor += 1;
+        return self.contents[self.cursor];
+    }
+
+    /// Close the file and free claimed memory
+    pub fn close(self: *AsyncFileStream) void {
+        while (self._file_read.load(.monotonic) == false) {}
+        const file: File = .{ .handle = self.file_handle };
+        if (self.with_lock) {
+            file.unlock();
+        }
+        file.close();
+    }
+};
 
 /// Represents the JSON fields we care about
 const Scan = struct {
