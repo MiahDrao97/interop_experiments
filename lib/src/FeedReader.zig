@@ -63,7 +63,10 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         var buf: [4096]u8 = undefined;
         const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
             log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-            return .err(.failedToRead);
+            return .err(switch (err) {
+                error.OutOfMemory => .outOfMemory,
+                else => .failedToRead,
+            });
         } orelse return .eof;
 
         log.debug("\nParsed object: '{s}'", .{slice});
