@@ -38,6 +38,10 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         log.err("This thread already has an open reader. Close the current reader before opening a new one.", .{});
         return .conflict;
     }
+    // quasi-singleton
+    if (arena == null) {
+        arena = .init(alloc);
+    }
 
     const open_start: i64 = std.time.microTimestamp();
 
@@ -62,7 +66,6 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         };
     }
 
-    arena = .init(alloc);
     reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| {
         @branchHint(.cold);
         switch (err) {

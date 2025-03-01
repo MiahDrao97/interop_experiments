@@ -40,12 +40,13 @@ const events_key: []const u8 = "events";
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
 pub fn open(arena: *ArenaAllocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !*FeedReader {
-    const feed_reader: *FeedReader = try arena.allocator().create(FeedReader);
-    errdefer arena.allocator().destroy(feed_reader);
+    const allocator: Allocator = arena.allocator();
+    const feed_reader: *FeedReader = try allocator.create(FeedReader);
+    errdefer allocator.destroy(feed_reader);
     feed_reader.* = .{
         .arena = arena,
         .telemetry = .init(file_path),
-        .file_stream = .init(arena.allocator(), file, with_file_lock),
+        .file_stream = .init(allocator, file, with_file_lock),
     };
 
     const read_thread: Thread = try feed_reader.file_stream.startRead();
@@ -72,7 +73,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             Scan,
             self.arena.allocator(),
             slice,
-            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always },
+            ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| switch (err) {
             error.OutOfMemory => {
                 @branchHint(.cold);
@@ -814,7 +815,7 @@ const AsyncFileStream = struct {
     }
 
     /// Close the file and free claimed memory
-    pub fn close(self: *AsyncFileStream) void {
+    pub fn close(self: *const AsyncFileStream) void {
         while (!self._file_read.load(.monotonic)) {}
         const file: File = .{ .handle = self.file_handle };
         if (self.with_lock) {
@@ -825,8 +826,8 @@ const AsyncFileStream = struct {
 
     /// Free the contents
     pub fn deinit(self: *AsyncFileStream) void {
-        while (!self._file_read.load(.monotonic))
-            self.allocator.free(self.contents);
+        while (!self._file_read.load(.monotonic)) {}
+        self.allocator.free(self.contents);
         self.* = undefined;
     }
 };
