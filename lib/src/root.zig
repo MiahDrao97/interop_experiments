@@ -97,9 +97,8 @@ export fn nextScan() ScanResult {
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
     if (reader) |current_reader| {
-        current_reader.file_stream.close();
+        current_reader.deinit(reset_mode);
         // intentionally hold on to our pre-allocated memory
-        _ = arena.?.reset(reset_mode);
         reader = null;
     }
 }
