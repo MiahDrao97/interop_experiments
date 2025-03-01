@@ -97,8 +97,8 @@ export fn close() void {
         current_reader.file_stream.close();
         // intentionally hold on to our pre-allocated memory
         _ = arena.?.reset(reset_mode);
-        reader = null;
         arena = null;
+        reader = null;
     }
 }
 

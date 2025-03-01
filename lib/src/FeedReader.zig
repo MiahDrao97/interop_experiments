@@ -17,6 +17,7 @@ const Thread = std.Thread;
 const SpawnConfig = Thread.SpawnConfig;
 const assert = std.debug.assert;
 const Atomic = std.atomic.Value;
+const BufferedReader = std.io.BufferedReader;
 
 /// Arena allocator used to parse each JSON object
 arena: *ArenaAllocator,
@@ -102,6 +103,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                 });
                 return .eof;
             },
+            error.OutOfMemory => return .err(.outOfMemory),
             else => {
                 log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?}", .{
                     self.telemetry.file_path,
@@ -120,7 +122,12 @@ pub fn nextScan(self: *FeedReader) ScanResult {
 }
 
 /// Parse until the "events" field
-fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadError }!void {
+fn openEvents(self: *FeedReader) error{
+    EndOfStream,
+    InvalidFileFormat,
+    ReadError,
+    OutOfMemory,
+}!void {
     var inside_quotes: bool = false;
     var idx: usize = 0;
     var inside_events: bool = false;
@@ -175,20 +182,33 @@ fn openEvents(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadErro
             try self.openArray();
             return;
         }
-    } else |err| {
-        log.err("Encountered error opening events ('{s}', line: {d}, pos: {d}): {s} -> {?}", .{
-            self.telemetry.file_path,
-            self.telemetry.line,
-            self.telemetry.pos,
-            @errorName(err),
-            @errorReturnTrace(),
-        });
-        return error.ReadError;
+    } else |err| switch (err) {
+        error.OutOfMemory => |oom| {
+            @branchHint(.cold);
+            log.err("FATAL: Out of memory", .{});
+            return oom;
+        },
+        else => {
+            @branchHint(.unlikely);
+            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                self.telemetry.file_path,
+                self.telemetry.line,
+                self.telemetry.pos,
+                @errorName(err),
+                @errorReturnTrace(),
+            });
+            return error.ReadError;
+        }
     }
 }
 
 /// Parse until the open square brack ('['). After this, we'll be ready to start parsing objects out of the array.
-fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadError }!void {
+fn openArray(self: *FeedReader) error{
+    EndOfStream,
+    InvalidFileFormat,
+    ReadError,
+    OutOfMemory,
+}!void {
     while (self.file_stream.nextByte()) |byte| {
         if (byte == null) {
             return error.EndOfStream;
@@ -219,20 +239,34 @@ fn openArray(self: *FeedReader) error{ EndOfStream, InvalidFileFormat, ReadError
             self.telemetry.pos,
         });
         return error.InvalidFileFormat;
-    } else |err| {
-        log.err("Encountered error opening array ('{s}', line: {d}, pos: {d}): {s} -> {?}", .{
-            self.telemetry.file_path,
-            self.telemetry.line,
-            self.telemetry.pos,
-            @errorName(err),
-            @errorReturnTrace(),
-        });
-        return error.ReadError;
+    } else |err| switch (err) {
+        error.OutOfMemory => |oom| {
+            @branchHint(.cold);
+            log.err("FATAL: Out of memory", .{});
+            return oom;
+        },
+        else => {
+            @branchHint(.unlikely);
+            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                self.telemetry.file_path,
+                self.telemetry.line,
+                self.telemetry.pos,
+                @errorName(err),
+                @errorReturnTrace(),
+            });
+            return error.ReadError;
+        }
     }
 }
 
 /// Parse next JSON object in our file stream, outputting the bytes read to `buf`
-fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNotTerminated, BufferOverflow, ReadError }!?[]const u8 {
+fn parseNextObject(self: *FeedReader, buf: []u8) error{
+    InvalidFormat,
+    ObjectNotTerminated,
+    BufferOverflow,
+    ReadError,
+    OutOfMemory,
+}!?[]const u8 {
     var open_brace: bool = false;
     var close_brace: bool = false;
     var inside_quotes: bool = false;
@@ -301,16 +335,23 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{ InvalidFormat, ObjectNot
             });
             return error.InvalidFormat;
         }
-    } else |err| {
-        @branchHint(.cold);
-        log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
-            self.telemetry.file_path,
-            self.telemetry.line,
-            self.telemetry.pos,
-            @errorName(err),
-            @errorReturnTrace(),
-        });
-        return error.ReadError;
+    } else |err| switch (err) {
+        error.OutOfMemory => |oom| {
+            @branchHint(.cold);
+            log.err("FATAL: Out of memory", .{});
+            return oom;
+        },
+        else => {
+            @branchHint(.unlikely);
+            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                self.telemetry.file_path,
+                self.telemetry.line,
+                self.telemetry.pos,
+                @errorName(err),
+                @errorReturnTrace(),
+            });
+            return error.ReadError;
+        }
     }
 
     if (!close_brace) {
@@ -721,7 +762,7 @@ const AsyncFileStream = struct {
     /// Position we're at in the file stream
     cursor: usize = 0,
     /// Contents of the file
-    contents: []u8,
+    contents: []const u8,
     /// Allocator
     allocator: Allocator,
 
@@ -749,7 +790,9 @@ const AsyncFileStream = struct {
         errdefer |e| self.err = e;
 
         const file: File = .{ .handle = self.file_handle };
-        const reader: AnyReader = file.reader().any();
+        // use a buffered reader for even less sys calls
+        var buf_reader: BufferedReader(4096, File.Reader) = std.io.bufferedReader(file.reader());
+        const reader: AnyReader = buf_reader.reader().any();
 
         // TODO : What max size do we wanna handle? Should we do some chunking after a certain threshold?
         self.contents = try reader.readAllAlloc(self.allocator, std.math.maxInt(usize));
@@ -757,7 +800,7 @@ const AsyncFileStream = struct {
 
     /// Get the next byte (has to wait while the file is being read)
     pub fn nextByte(self: *AsyncFileStream) !?u8 {
-        while (self._file_read.load(.monotonic) == false) {}
+        while (!self._file_read.load(.monotonic)) {}
         if (self.err) |e| {
             return e;
         }
@@ -772,12 +815,19 @@ const AsyncFileStream = struct {
 
     /// Close the file and free claimed memory
     pub fn close(self: *AsyncFileStream) void {
-        while (self._file_read.load(.monotonic) == false) {}
+        while (!self._file_read.load(.monotonic)) {}
         const file: File = .{ .handle = self.file_handle };
         if (self.with_lock) {
             file.unlock();
         }
         file.close();
+    }
+
+    /// Free the contents
+    pub fn deinit(self: *AsyncFileStream) void {
+        while (!self._file_read.load(.monotonic))
+            self.allocator.free(self.contents);
+        self.* = undefined;
     }
 };
 
