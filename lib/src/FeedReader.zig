@@ -39,7 +39,12 @@ const events_key: []const u8 = "events";
 ///     `file` - contains the file handler that we'll use for the file stream
 ///     `file_path` - path to the file we've opened
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn open(arena: *ArenaAllocator, file: File, file_path: [:0]const u8, with_file_lock: bool) !*FeedReader {
+pub fn open(
+    arena: *ArenaAllocator,
+    file: File,
+    file_path: [:0]const u8,
+    with_file_lock: bool,
+) (Thread.SpawnError || Allocator.Error)!*FeedReader {
     const allocator: Allocator = arena.allocator();
     const feed_reader: *FeedReader = try allocator.create(FeedReader);
     errdefer allocator.destroy(feed_reader);
