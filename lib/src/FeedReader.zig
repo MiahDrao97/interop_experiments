@@ -8,7 +8,6 @@ const AnyReader = std.io.AnyReader;
 const Parsed = json.Parsed;
 const ParseOptions = json.ParseOptions;
 const json = std.json;
-const log = std.log;
 const ascii = std.ascii;
 const windows = std.os.windows;
 const posix = std.posix;
@@ -30,6 +29,8 @@ file_stream: AsyncFileStream,
 
 /// This structure represents the reader that does the actual parsing of the feed file.
 const FeedReader = @This();
+/// scoped logger
+const log = std.log.scoped(.feed_reader);
 
 /// Key on the JSON object that holds the events array
 const events_key: []const u8 = "events";
@@ -491,6 +492,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         const BufferId = enum(u1) { a = 0, b = 1 };
         const State = enum(u8) { running, suspended, complete };
+        const dual_buf_stream_log = std.log.scoped(.dual_buffer_stream);
         const Self = @This();
 
         /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
@@ -599,7 +601,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             };
 
             const bytes_read: usize = reader.readAtLeast(to_load, buf_size) catch |err| {
-                log.err("Encountered error while reading file: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+                dual_buf_stream_log.err("Encountered error while reading file: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
                 return error.ReadError;
             };
             if (bytes_read < buf_size) {
@@ -770,6 +772,9 @@ const AsyncFileStream = struct {
     /// Allocator
     allocator: Allocator,
 
+    /// Logger scoped to this struct
+    const async_fs_log = std.log.scoped(.async_file_stream);
+
     /// Initialize a new `AsyncFileStream` with an allocator, file, and whether or not the file was opened with a lock
     pub fn init(allocator: Allocator, file: File, with_lock: bool) AsyncFileStream {
         return .{
@@ -789,7 +794,7 @@ const AsyncFileStream = struct {
     fn read(self: *AsyncFileStream) !void {
         defer {
             self._file_read.store(true, .release);
-            log.info("Finished reading file", .{});
+            async_fs_log.info("Finished reading file", .{});
         }
         errdefer |e| self.err = e;
 
