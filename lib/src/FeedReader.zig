@@ -85,7 +85,6 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_if_needed },
         ) catch |err| switch (err) {
             error.OutOfMemory => {
-                @branchHint(.cold);
                 return .err(.outOfMemory);
             },
             else => {
@@ -194,12 +193,10 @@ fn openEvents(self: *FeedReader) error{
         }
     } else |err| switch (err) {
         error.OutOfMemory => |oom| {
-            @branchHint(.cold);
             log.err("FATAL: Out of memory", .{});
             return oom;
         },
         else => {
-            @branchHint(.unlikely);
             log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
                 self.telemetry.file_path,
                 self.telemetry.line,
@@ -251,12 +248,10 @@ fn openArray(self: *FeedReader) error{
         return error.InvalidFileFormat;
     } else |err| switch (err) {
         error.OutOfMemory => |oom| {
-            @branchHint(.cold);
             log.err("FATAL: Out of memory", .{});
             return oom;
         },
         else => {
-            @branchHint(.unlikely);
             log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
                 self.telemetry.file_path,
                 self.telemetry.line,
@@ -347,12 +342,10 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
         }
     } else |err| switch (err) {
         error.OutOfMemory => |oom| {
-            @branchHint(.cold);
             log.err("FATAL: Out of memory", .{});
             return oom;
         },
         else => {
-            @branchHint(.unlikely);
             log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
                 self.telemetry.file_path,
                 self.telemetry.line,
@@ -628,7 +621,11 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             self.allocator.destroy(self);
         }
 
-        fn Worker(comptime TArgs: type, comptime TError: type, function: fn (*Atomic(State), anytype) TError!void) type {
+        fn Worker(
+            comptime TArgs: type,
+            comptime TError: type,
+            function: fn (*Atomic(State), anytype) TError!void,
+        ) type {
             return struct {
                 args: TArgs,
 
@@ -880,8 +877,8 @@ pub const ScanResult = extern struct {
     pub fn ok(scan: Scan) ScanResult {
         return .{
             .status = .success,
-            .imb = if (scan.imb != null) scan.imb.?.ptr else null,
-            .mailPhase = if (scan.mailPhase != null) scan.mailPhase.?.ptr else null,
+            .imb = if (scan.imb) |imb| imb.ptr else null,
+            .mailPhase = if (scan.mailPhase) |mailPhase| mailPhase.ptr else null,
         };
     }
 

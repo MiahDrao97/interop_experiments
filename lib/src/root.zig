@@ -51,7 +51,6 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            @branchHint(.unlikely);
             log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
@@ -60,24 +59,20 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            @branchHint(.unlikely);
             log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
     }
 
-    reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| {
-        @branchHint(.cold);
-        switch (err) {
-            Allocator.Error.OutOfMemory => {
-                log.err("Out of memory. Last allocation: {?}", .{@errorReturnTrace()});
-                return .outOfMemory;
-            },
-            else => {
-                log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
-                return .failedToOpen;
-            },
-        }
+    reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| switch (err) {
+        Allocator.Error.OutOfMemory => {
+            log.err("Out of memory. Last allocation: {?}", .{@errorReturnTrace()});
+            return .outOfMemory;
+        },
+        else => {
+            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            return .failedToOpen;
+        },
     };
 
     const open_end: i64 = std.time.microTimestamp();
