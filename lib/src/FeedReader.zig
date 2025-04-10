@@ -11,10 +11,12 @@ const json = std.json;
 const ascii = std.ascii;
 const windows = std.os.windows;
 const posix = std.posix;
+const fmt = std.fmt;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
 const SpawnConfig = Thread.SpawnConfig;
 const assert = std.debug.assert;
+const SourceLocation = std.builtin.SourceLocation;
 const Atomic = std.atomic.Value;
 const BufferedReader = std.io.BufferedReader;
 
@@ -26,6 +28,8 @@ open_events: bool = false,
 telemetry: Telemetry,
 /// The file stream we're reading from
 file_stream: AsyncFileStream,
+/// The last error encountered, saved for visibility to the managed code (owned by the `arena`)
+last_err: ?[:0]const u8 = null,
 
 /// This structure represents the reader that does the actual parsing of the feed file.
 const FeedReader = @This();
@@ -68,6 +72,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         // parse JSON object: from '{' until '}'
         var buf: [4096]u8 = undefined;
         const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
+            // don't assign `last_err` here; that happened deeper down
             log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
             return .err(switch (err) {
                 error.OutOfMemory => .outOfMemory,
@@ -88,14 +93,18 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                 return .err(.outOfMemory);
             },
             else => {
-                log.err("Failed to parse feeder object at '{s}', line {d}, pos {d}: {s} -> {?}\nObject:\n{s}\n", .{
+                const src: SourceLocation = @src();
+                self.last_err = fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Failed to parse feeder json object at '{s}', line {d}, pos {d}: {s} -> {?}\nObject:\n{s}\n", .{
+                    src.file,
+                    src.line,
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
                     @errorName(err),
                     @errorReturnTrace(),
                     slice,
-                });
+                }) catch return .err(.outOfMemory);
+                log.err("{s}", .{self.last_err.?});
                 return .err(.failedToRead);
             },
         };
@@ -114,6 +123,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             },
             error.OutOfMemory => return .err(.outOfMemory),
             else => {
+                // also don't set `last_err`, as that's set deeper in the function
                 log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?}", .{
                     self.telemetry.file_path,
                     self.telemetry.line,
@@ -142,6 +152,7 @@ fn openEvents(self: *FeedReader) error{
     var inside_events: bool = false;
     while (self.file_stream.nextByte()) |byte| {
         if (byte == null) {
+            // results in EOF result rather than an error
             return error.EndOfStream;
         }
         log.debug("Next byte: {c}", .{byte.?});
@@ -197,13 +208,17 @@ fn openEvents(self: *FeedReader) error{
             return oom;
         },
         else => {
-            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            const src: SourceLocation = @src();
+            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                src.file,
+                src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
             });
+            log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
     }
@@ -218,6 +233,7 @@ fn openArray(self: *FeedReader) error{
 }!void {
     while (self.file_stream.nextByte()) |byte| {
         if (byte == null) {
+            // results in EOF result rather than an error
             return error.EndOfStream;
         }
 
@@ -239,12 +255,16 @@ fn openArray(self: *FeedReader) error{
         if (byte == '[') {
             return;
         }
-        log.err("First non-whitespace character in \"events\" field was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
+        const src: SourceLocation = @src();
+        self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| First non-whitespace character in \"events\" field was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
+            src.file,
+            src.line,
             byte.?,
             self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
         });
+        log.err("{s}", .{self.last_err.?});
         return error.InvalidFileFormat;
     } else |err| switch (err) {
         error.OutOfMemory => |oom| {
@@ -252,13 +272,17 @@ fn openArray(self: *FeedReader) error{
             return oom;
         },
         else => {
-            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            const src: SourceLocation = @src();
+            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                src.file,
+                src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
             });
+            log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
     }
@@ -278,13 +302,17 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
     var i: usize = 0;
     while (self.file_stream.nextByte()) |byte| {
         if (i >= buf.len) {
-            log.err("FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
+            const src: SourceLocation = @src(); // this is the line no. that will show in the log
+            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}|FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
+                src.file,
+                src.line,
                 buf.len,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
                 buf,
             });
+            log.err("{s}", .{self.last_err.?});
             return error.BufferOverflow;
         }
 
@@ -332,12 +360,16 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
                 break;
             }
         } else {
-            log.err("Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
+            const src: SourceLocation = @src();
+            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
+                src.file,
+                src.line,
                 byte.?,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
             });
+            log.err("{s}", .{self.last_err.?});
             return error.InvalidFormat;
         }
     } else |err| switch (err) {
@@ -346,18 +378,31 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
             return oom;
         },
         else => {
-            log.err("Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            const src: SourceLocation = @src();
+            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                src.file,
+                src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
             });
+            log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
     }
 
     if (!close_brace) {
+        const src: SourceLocation = @src();
+        self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Object was not terminated with a closing brace while parsing '{s}', line {d}, pos {d}", .{
+            src.file,
+            src.line,
+            self.telemetry.file_path,
+            self.telemetry.line,
+            self.telemetry.pos,
+        });
+        log.err("{s}", .{self.last_err.?});
         return error.ObjectNotTerminated;
     }
     return buf[0..i];

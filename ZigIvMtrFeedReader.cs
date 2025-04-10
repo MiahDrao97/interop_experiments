@@ -118,6 +118,9 @@ internal static partial class LibBindings
     [LibraryImport(_libFile, EntryPoint = "nextScan")]
     private static partial ScanResultUnmanaged NextScan();
 
+    [LibraryImport(_libFile, EntryPoint = "lastError")]
+    private static partial IntPtr LastError();
+
     /// <summary>
     /// Represents the status code when opening a new reader
     /// </summary>
@@ -231,6 +234,19 @@ internal static partial class LibBindings
     public static void CloseReader() => Close();
 
     /// <summary>
+    /// Get the last error from the lib
+    /// </summary>
+    public static string? GetLastError()
+    {
+        IntPtr str = LastError();
+        if (str == IntPtr.Zero)
+        {
+            return null;
+        }
+        return Marshal.PtrToStringUTF8(str);
+    }
+
+    /// <summary>
     /// Get the next scan result or null if end of file.
     /// </summary>
     public static ScanResult? Next()
@@ -246,7 +262,7 @@ internal static partial class LibBindings
             case ReadResult.Eof:
                 return null;
             case ReadResult.FailedToRead:
-                throw new InvalidOperationException("Failed to read the file");
+                throw new InvalidOperationException($"Failed to read the file:\n{GetLastError()}");
             case ReadResult.NoActiveReader:
                 throw new InvalidOperationException("No reader has a file open at this time");
             case ReadResult.Success:

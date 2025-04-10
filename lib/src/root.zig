@@ -98,6 +98,14 @@ export fn close() void {
     }
 }
 
+/// Expose the last error to managed code
+export fn lastError() ?[*:0]const u8 {
+    if (reader) |current_reader| {
+        return if (current_reader.last_err) |err| err.ptr else null;
+    }
+    return null;
+}
+
 /// Reader result from opening a new reader
 pub const NewReaderResult = enum(i32) {
     /// Successfully opened
