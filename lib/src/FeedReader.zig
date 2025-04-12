@@ -35,7 +35,6 @@ last_err: ?[:0]const u8 = null,
 const FeedReader = @This();
 /// scoped logger
 const log = std.log.scoped(.feed_reader);
-
 /// Key on the JSON object that holds the events array
 const events_key: []const u8 = "events";
 
