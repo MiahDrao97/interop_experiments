@@ -441,8 +441,8 @@ fn FileStream(comptime buf_size: usize) type {
         /// Slice of the buffer we're currently reading
         read_buffer: []u8 = undefined,
         /// Cursor on the `read_buffer`.
-        /// Starts at -1 to indicate that we're starting with no data and need to read in the first chunk.
-        cursor: isize = -1,
+        /// Starts at null to indicate we need to read in the first chunk.
+        cursor: ?usize = null,
         /// If true, we've encountered the end of the file.
         /// Once the `cursor` reaches the length of the `read_buffer`, we've streamed the whole file.
         eof: bool = false,
@@ -457,16 +457,14 @@ fn FileStream(comptime buf_size: usize) type {
 
         /// Stream the next byte or `null` if EOF
         pub fn nextByte(self: *@This()) !?u8 {
-            if (self.cursor < 0 or self.cursor == self.read_buffer.len) {
+            if (self.cursor == null or self.cursor.? == self.read_buffer.len) {
                 if (self.eof) {
                     return null;
                 }
                 try self.nextSegment();
             }
-            assert(self.cursor >= 0);
-
-            defer self.cursor += 1;
-            return self.read_buffer[@bitCast(self.cursor)];
+            defer self.cursor.? += 1;
+            return self.read_buffer[self.cursor.?];
         }
 
         /// Loads the next chunk of the file into the buffer that matches `load_buf`
