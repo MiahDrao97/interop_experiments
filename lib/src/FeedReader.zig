@@ -1,24 +1,5 @@
-//! This structure represents the reader that does the actual parser of the feed file.
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
-const ResetMode = ArenaAllocator.ResetMode;
-const File = std.fs.File;
-const AnyReader = std.io.AnyReader;
-const Parsed = json.Parsed;
-const ParseOptions = json.ParseOptions;
-const json = std.json;
-const ascii = std.ascii;
-const windows = std.os.windows;
-const posix = std.posix;
-const fmt = std.fmt;
-const fd_t = posix.fd_t;
-const Thread = std.Thread;
-const SpawnConfig = Thread.SpawnConfig;
-const assert = std.debug.assert;
-const SourceLocation = std.builtin.SourceLocation;
-const Atomic = std.atomic.Value;
-const BufferedReader = std.io.BufferedReader;
+//! This structure represents the reader that does the actual parsing of the feed file.
+const FeedReader = @This();
 
 /// Arena allocator used to parse each JSON object
 arena: *ArenaAllocator,
@@ -31,8 +12,6 @@ file_stream: AsyncFileStream,
 /// The last error encountered, saved for visibility to the managed code (owned by the `arena`)
 last_err: ?[:0]const u8 = null,
 
-/// This structure represents the reader that does the actual parsing of the feed file.
-const FeedReader = @This();
 /// scoped logger
 const log = std.log.scoped(.feed_reader);
 /// Key on the JSON object that holds the events array
@@ -940,3 +919,24 @@ pub const ScanResult = extern struct {
         .mailPhase = null,
     };
 };
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const ResetMode = ArenaAllocator.ResetMode;
+const File = std.fs.File;
+const AnyReader = std.io.AnyReader;
+const Parsed = json.Parsed;
+const ParseOptions = json.ParseOptions;
+const json = std.json;
+const ascii = std.ascii;
+const windows = std.os.windows;
+const posix = std.posix;
+const fmt = std.fmt;
+const fd_t = posix.fd_t;
+const Thread = std.Thread;
+const SpawnConfig = Thread.SpawnConfig;
+const assert = std.debug.assert;
+const SourceLocation = std.builtin.SourceLocation;
+const Atomic = std.atomic.Value;
+const BufferedReader = std.io.BufferedReader;

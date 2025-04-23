@@ -1,34 +1,30 @@
-const std = @import("std");
-const testing = std.testing;
-const log = std.log.scoped(.root);
-const mem = std.mem;
-const Allocator = mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
-const DebugAllocator = std.heap.DebugAllocator;
-const File = std.fs.File;
-const FeedReader = @import("FeedReader.zig");
-const ScanResult = FeedReader.ScanResult;
-const ReadScanStatus = FeedReader.ReadScanStatus;
-const ResetMode = std.heap.ArenaAllocator.ResetMode;
+//! Root of the lib module, which contains the exported functions
 
 /// Static reader that is unique to each thread
 threadlocal var reader: ?*FeedReader = null;
-
 /// Arena allocator that will get passed to the `reader`
 threadlocal var arena: ?ArenaAllocator = null;
-
 /// Allocator used in debug mode
 var debug_allocator: DebugAllocator(.{}) = .init;
-
 /// I exposed this global so that it can set in unit testing to detect memory leaks
 var alloc: Allocator = switch (@import("builtin").mode) {
     .ReleaseFast => std.heap.smp_allocator,
-    .ReleaseSmall => std.heap.c_allocator,
     else => debug_allocator.allocator(),
 };
-
 /// Expose this global so that test cases can fully deinit the arena so we pass tests without memory leaks
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
+
+/// Reader result from opening a new reader
+pub const NewReaderResult = enum(i32) {
+    /// Successfully opened
+    opened = 0,
+    /// Failed to open, likely because the OS would not let us open this file
+    failedToOpen = 1,
+    /// There is already an open reader on this thread
+    conflict = 2,
+    /// Out of memory to allocate
+    outOfMemory = 3,
+};
 
 /// Open a file from the USPS feeder, returning a status code for the operation.
 ///     `file_path` is a null-terminated string.
@@ -106,18 +102,6 @@ export fn lastError() ?[*:0]const u8 {
     return null;
 }
 
-/// Reader result from opening a new reader
-pub const NewReaderResult = enum(i32) {
-    /// Successfully opened
-    opened = 0,
-    /// Failed to open, likely because the OS would not let us open this file
-    failedToOpen = 1,
-    /// There is already an open reader on this thread
-    conflict = 2,
-    /// Out of memory to allocate
-    outOfMemory = 3,
-};
-
 test "success case" {
     // switch to testing allocator to detect memory leaks
     alloc = testing.allocator;
@@ -151,3 +135,16 @@ test "success case" {
     try testing.expectEqual(null, scanResult.imb);
     try testing.expectEqual(null, scanResult.mailPhase);
 }
+
+const std = @import("std");
+const testing = std.testing;
+const log = std.log.scoped(.root);
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+const DebugAllocator = std.heap.DebugAllocator;
+const File = std.fs.File;
+const FeedReader = @import("FeedReader.zig");
+const ScanResult = FeedReader.ScanResult;
+const ReadScanStatus = FeedReader.ReadScanStatus;
+const ResetMode = std.heap.ArenaAllocator.ResetMode;

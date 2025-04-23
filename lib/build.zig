@@ -1,11 +1,3 @@
-const std = @import("std");
-const Build = std.Build;
-const OptimizeMode = std.builtin.OptimizeMode;
-const ResolvedTarget = Build.ResolvedTarget;
-const Step = Build.Step;
-const Compile = Step.Compile;
-const Run = Step.Run;
-
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
@@ -56,3 +48,11 @@ pub fn build(b: *Build) void {
     const test_step: *Step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
 }
+
+const std = @import("std");
+const Build = std.Build;
+const OptimizeMode = std.builtin.OptimizeMode;
+const ResolvedTarget = Build.ResolvedTarget;
+const Step = Build.Step;
+const Compile = Step.Compile;
+const Run = Step.Run;
