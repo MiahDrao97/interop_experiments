@@ -110,7 +110,7 @@ internal static partial class LibBindings
 #endif
 
     [LibraryImport(_libFile, EntryPoint = "open")]
-    private static unsafe partial int Open(byte* fileName);
+    private static unsafe partial sbyte Open(byte* fileName);
 
     [LibraryImport(_libFile, EntryPoint = "close")]
     private static partial void Close();
@@ -185,7 +185,7 @@ internal static partial class LibBindings
         /// <summary>
         /// Status, matching <see cref="ReadResult"/>
         /// </summary>
-        public int status;
+        public sbyte status;
 
         /// <summary>
         /// IMB parsed from the feed file. Should be marshalled as an ANSI string.

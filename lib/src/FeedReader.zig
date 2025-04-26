@@ -870,7 +870,7 @@ const Scan = struct {
 };
 
 /// Status of reading our scan that will be passed through our exported function
-pub const ReadScanStatus = enum(i32) {
+pub const ReadScanStatus = enum(i8) {
     /// Successfully read scan
     success = 0,
     /// No reader is currently active

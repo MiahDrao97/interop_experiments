@@ -15,7 +15,7 @@ var alloc: Allocator = switch (@import("builtin").mode) {
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
 
 /// Reader result from opening a new reader
-pub const NewReaderResult = enum(i32) {
+pub const NewReaderResult = enum(i8) {
     /// Successfully opened
     opened = 0,
     /// Failed to open, likely because the OS would not let us open this file
