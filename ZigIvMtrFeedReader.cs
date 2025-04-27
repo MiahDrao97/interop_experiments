@@ -110,7 +110,7 @@ internal static partial class LibBindings
 #endif
 
     [LibraryImport(_libFile, EntryPoint = "open")]
-    private static unsafe partial sbyte Open(byte* fileName);
+    private static unsafe partial byte Open(byte* fileName);
 
     [LibraryImport(_libFile, EntryPoint = "close")]
     private static partial void Close();
