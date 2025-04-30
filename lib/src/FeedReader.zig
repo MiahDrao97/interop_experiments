@@ -202,7 +202,7 @@ fn openEvents(self: *FeedReader) error{
     }
 }
 
-/// Parse until the open square brack ('['). After this, we'll be ready to start parsing objects out of the array.
+/// Parse until the open square bracket ('['). After this, we'll be ready to start parsing objects out of the array.
 fn openArray(self: *FeedReader) error{
     EndOfStream,
     InvalidFileFormat,

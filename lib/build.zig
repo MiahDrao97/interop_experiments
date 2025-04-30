@@ -14,16 +14,19 @@ pub fn build(b: *Build) void {
     const optimize: OptimizeMode = b.standardOptimizeOption(.{});
 
     // .dll output
-    const lib: *Compile = b.addSharedLibrary(.{
+    const lib: *Compile = b.addLibrary(.{
         // this is the name of our dll file (minus the file extension)
         .name = "zig_lib",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .single_threaded = false,
-        .error_tracing = true,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .single_threaded = false,
+            .error_tracing = true,
+        }),
+        .linkage = .dynamic,
     });
 
     // This declares intent for the library to be installed into the standard
