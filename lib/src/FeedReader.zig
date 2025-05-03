@@ -31,9 +31,13 @@ pub fn open(
     const allocator: Allocator = arena.allocator();
     const feed_reader: *FeedReader = try allocator.create(FeedReader);
     errdefer allocator.destroy(feed_reader);
+
+    const file_path_cpy: [:0]const u8 = try allocator.dupeZ(u8, file_path);
+    errdefer allocator.free(file_path_cpy);
+
     feed_reader.* = .{
         .arena = arena,
-        .telemetry = .init(file_path),
+        .telemetry = .init(file_path_cpy),
         .file_stream = .init(allocator, file, with_file_lock),
     };
 
@@ -814,12 +818,11 @@ const AsyncFileStream = struct {
         return try Thread.spawn(.{}, read, .{self});
     }
 
-    fn read(self: *AsyncFileStream) !void {
+    fn read(self: *AsyncFileStream) void {
         defer {
             self._file_read.store(true, .release);
             async_fs_log.info("Finished reading file", .{});
         }
-        errdefer |e| self.err = e;
 
         const file: File = .{ .handle = self.file_handle };
         // use a buffered reader for even less sys calls
@@ -827,7 +830,11 @@ const AsyncFileStream = struct {
         const reader: AnyReader = buf_reader.reader().any();
 
         // TODO : What max size do we wanna handle? Should we do some chunking after a certain threshold?
-        self.contents = try reader.readAllAlloc(self.allocator, std.math.maxInt(usize));
+        self.contents = reader.readAllAlloc(self.allocator, std.math.maxInt(usize)) catch |e| err_blk: {
+            async_fs_log.err("Encountered failure while reading file: {s} -> {?}", .{ @errorName(e), @errorReturnTrace() });
+            self.err = e;
+            break :err_blk &.{};
+        };
     }
 
     /// Get the next byte (has to wait while the file is being read)
