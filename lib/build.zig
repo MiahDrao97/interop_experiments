@@ -13,19 +13,21 @@ pub fn build(b: *Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize: OptimizeMode = b.standardOptimizeOption(.{});
 
+    const mod: *Build.Module = b.addModule("zig_lib", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .single_threaded = false,
+        .error_tracing = true,
+    });
+
     // .dll output
     const lib: *Compile = b.addLibrary(.{
         // this is the name of our dll file (minus the file extension)
         .name = "zig_lib",
         // In this case the main source file is merely a path, however, in more
         // complicated build scripts, this could be a generated file.
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-            .single_threaded = false,
-            .error_tracing = true,
-        }),
+        .root_module = mod,
         .linkage = .dynamic,
     });
 
@@ -36,12 +38,7 @@ pub fn build(b: *Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests: *Compile = b.addTest(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .error_tracing = true,
-    });
+    const lib_unit_tests: *Compile = b.addTest(.{ .root_module = mod });
 
     const run_lib_unit_tests: *Run = b.addRunArtifact(lib_unit_tests);
 

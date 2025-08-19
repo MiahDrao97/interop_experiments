@@ -47,7 +47,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
     } else {
@@ -55,18 +55,18 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
             file_path,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         };
     }
 
     reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| switch (err) {
         Allocator.Error.OutOfMemory => {
-            log.err("Out of memory. Last allocation: {?}", .{@errorReturnTrace()});
+            log.err("Out of memory. Last allocation: {?f}", .{@errorReturnTrace()});
             return .outOfMemory;
         },
         else => {
-            log.err("Failed to open file '{s}': {s} -> {?}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
             return .failedToOpen;
         },
     };

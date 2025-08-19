@@ -12,6 +12,10 @@ file_stream: AsyncFileStream,
 /// The last error encountered, saved for visibility to the managed code (owned by the `arena`)
 last_err: ?[:0]const u8 = null,
 
+var buffer: struct {
+    sink: [4098]u8,
+} = undefined;
+
 /// scoped logger
 const log = std.log.scoped(.feed_reader);
 /// Key on the JSON object that holds the events array
@@ -55,7 +59,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         var buf: [4096]u8 = undefined;
         const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
             // don't assign `last_err` here; that happened deeper down
-            log.err("Failed to parse next object: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
+            log.err("Failed to parse next object: {s} -> {?f}", .{ @errorName(err), @errorReturnTrace() });
             return .err(switch (err) {
                 error.OutOfMemory => .outOfMemory,
                 else => .failedToRead,
@@ -76,7 +80,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             },
             else => {
                 const src: SourceLocation = @src();
-                self.last_err = fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Failed to parse feeder json object at '{s}', line {d}, pos {d}: {s} -> {?}\nObject:\n{s}\n", .{
+                self.last_err = fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Failed to parse feeder json object at '{s}', line {d}, pos {d}: {s} -> {?f}\nObject:\n{s}\n", .{
                     src.file,
                     src.line,
                     self.telemetry.file_path,
@@ -85,7 +89,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
                     @errorName(err),
                     @errorReturnTrace(),
                     slice,
-                }) catch return .err(.outOfMemory);
+                }, 0) catch return .err(.outOfMemory);
                 log.err("{s}", .{self.last_err.?});
                 return .err(.failedToRead);
             },
@@ -95,7 +99,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
         // we only care about the "events" field
         self.openEvents() catch |err| switch (err) {
             error.EndOfStream => {
-                log.warn("Read until end of stream. The \"events\" field was not found ('{s}', line {d}, pos {d}) -> {?}", .{
+                log.warn("Read until end of stream. The \"events\" field was not found ('{s}', line {d}, pos {d}) -> {?f}", .{
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
@@ -106,7 +110,7 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             error.OutOfMemory => return .err(.outOfMemory),
             else => {
                 // also don't set `last_err`, as that's set deeper in the function
-                log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?}", .{
+                log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?f}", .{
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
@@ -191,7 +195,7 @@ fn openEvents(self: *FeedReader) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
@@ -199,7 +203,7 @@ fn openEvents(self: *FeedReader) error{
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
-            });
+            }, 0);
             log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
@@ -238,14 +242,14 @@ fn openArray(self: *FeedReader) error{
             return;
         }
         const src: SourceLocation = @src();
-        self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| First non-whitespace character in \"events\" field was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
+        self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| First non-whitespace character in \"events\" field was not '['. Instead was: '{c}'. '{s}', line: {d}, pos: {d}", .{
             src.file,
             src.line,
             byte.?,
             self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
-        });
+        }, 0);
         log.err("{s}", .{self.last_err.?});
         return error.InvalidFileFormat;
     } else |err| switch (err) {
@@ -255,7 +259,7 @@ fn openArray(self: *FeedReader) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
@@ -263,7 +267,7 @@ fn openArray(self: *FeedReader) error{
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
-            });
+            }, 0);
             log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
@@ -285,7 +289,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
     while (self.file_stream.nextByte()) |byte| {
         if (i >= buf.len) {
             const src: SourceLocation = @src(); // this is the line no. that will show in the log
-            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}|FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}|FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
                 src.file,
                 src.line,
                 buf.len,
@@ -293,7 +297,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
                 self.telemetry.line,
                 self.telemetry.pos,
                 buf,
-            });
+            }, 0);
             log.err("{s}", .{self.last_err.?});
             return error.BufferOverflow;
         }
@@ -343,14 +347,14 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
             }
         } else {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected token '{c}': '{s}', line {d}, pos {d}", .{
                 src.file,
                 src.line,
                 byte.?,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
-            });
+            }, 0);
             log.err("{s}", .{self.last_err.?});
             return error.InvalidFormat;
         }
@@ -361,7 +365,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
@@ -369,7 +373,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
                 self.telemetry.pos,
                 @errorName(err),
                 @errorReturnTrace(),
-            });
+            }, 0);
             log.err("{s}", .{self.last_err.?});
             return error.ReadError;
         }
@@ -377,13 +381,13 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
 
     if (!close_brace) {
         const src: SourceLocation = @src();
-        self.last_err = try fmt.allocPrintZ(self.arena.allocator(), "{s}: {d}| Object was not terminated with a closing brace while parsing '{s}', line {d}, pos {d}", .{
+        self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Object was not terminated with a closing brace while parsing '{s}', line {d}, pos {d}", .{
             src.file,
             src.line,
             self.telemetry.file_path,
             self.telemetry.line,
             self.telemetry.pos,
-        });
+        }, 0);
         log.err("{s}", .{self.last_err.?});
         return error.ObjectNotTerminated;
     }
@@ -457,14 +461,18 @@ fn FileStream(comptime buf_size: usize) type {
             }
 
             const file: File = .{ .handle = self.file_handle };
-            const reader: AnyReader = file.reader().any();
+            var reader: File.Reader = file.reader(&buffer.sink);
 
-            const bytes_read: usize = try reader.readAtLeast(&self.buf, buf_size);
-            if (bytes_read < buf_size) {
-                self.eof = true;
+            if (reader.interface.readSliceAll(&self.buf)) {
+                self.read_buffer = &self.buf;
+            } else |err| switch (err) {
+                Io.Reader.Error.EndOfStream => {
+                    self.eof = true;
+                    self.read_buffer = reader.interface.buffered();
+                },
+                else => |e| return e,
             }
             self.cursor = 0;
-            self.read_buffer = self.buf[0..bytes_read];
         }
 
         /// Close the file and unlock it if `file_locked`
@@ -560,7 +568,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         fn firstSegment(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
-            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+            self.state_machine.await(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -580,7 +588,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
 
         fn switchBuf(self: *Self) error{ReadError}!void {
             var err: ?error{ReadError} = null;
-            self.state_machine.@"await"(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
+            self.state_machine.await(&err, 1000, null) catch unreachable; // sleep 1 us in our loop with no timeout
 
             if (err) |encountered_err| {
                 return encountered_err;
@@ -616,16 +624,19 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             }
 
             const file: File = .{ .handle = self.file_handle };
-            const reader: AnyReader = file.reader().any();
+            var reader: File.Reader = file.reader(&buffer.sink);
 
             const to_load: []u8 = switch (load_buf) {
                 .a => &self.buf_a,
                 .b => &self.buf_b,
             };
 
-            const bytes_read: usize = reader.readAtLeast(to_load, buf_size) catch |err| {
-                dual_buf_stream_log.err("Encountered error while reading file: {s} -> {?}", .{ @errorName(err), @errorReturnTrace() });
-                return error.ReadError;
+            const bytes_read: usize = reader.interface.readSliceAll(to_load) catch |err| switch (err) {
+                Io.Reader.Error.EndOfStream => reader.interface.buffered().len,
+                else => {
+                    dual_buf_stream_log.err("Encountered error while reading file: {s} -> {?f}", .{ @errorName(err), @errorReturnTrace() });
+                    return error.ReadError;
+                },
             };
             if (bytes_read < buf_size) {
                 self.eof = true;
@@ -733,7 +744,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                     }
                 }
 
-                pub fn @"await"(
+                pub fn await(
                     self: *StateMachine(TError),
                     err_out: *?TError,
                     sleep_ns: u64,
@@ -825,13 +836,9 @@ const AsyncFileStream = struct {
         }
 
         const file: File = .{ .handle = self.file_handle };
-        // use a buffered reader for even less sys calls
-        var buf_reader: BufferedReader(4096, File.Reader) = std.io.bufferedReader(file.reader());
-        const reader: AnyReader = buf_reader.reader().any();
-
-        // TODO : What max size do we wanna handle? Should we do some chunking after a certain threshold?
-        self.contents = reader.readAllAlloc(self.allocator, std.math.maxInt(usize)) catch |e| err_blk: {
-            async_fs_log.err("Encountered failure while reading file: {s} -> {?}", .{ @errorName(e), @errorReturnTrace() });
+        var reader: File.Reader = file.reader(&buffer.sink);
+        self.contents = reader.interface.allocRemaining(self.allocator, .unlimited) catch |e| err_blk: {
+            async_fs_log.err("Encountered failure while reading file: {s} -> {?f}", .{ @errorName(e), @errorReturnTrace() });
             self.err = e;
             break :err_blk &.{};
         };
@@ -940,10 +947,10 @@ const ascii = std.ascii;
 const windows = std.os.windows;
 const posix = std.posix;
 const fmt = std.fmt;
+const Io = std.Io;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
 const SpawnConfig = Thread.SpawnConfig;
 const assert = std.debug.assert;
 const SourceLocation = std.builtin.SourceLocation;
 const Atomic = std.atomic.Value;
-const BufferedReader = std.io.BufferedReader;
