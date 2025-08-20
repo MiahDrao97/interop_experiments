@@ -535,7 +535,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             const new_stream: *Self = try allocator.create(Self);
             errdefer allocator.destroy(new_stream);
 
-            new_stream.* = Self{
+            new_stream.* = .{
                 .file_handle = file.handle,
                 .file_locked = with_file_lock,
                 .state_machine = try .new(allocator),
@@ -543,11 +543,7 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
                 .reading = undefined,
                 .allocator = allocator,
             };
-            try new_stream.state_machine.startWorker(
-                SpawnConfig{},
-                callNextSegment,
-                new_stream,
-            );
+            try new_stream.state_machine.startWorker(.{}, callNextSegment, new_stream);
             try new_stream.firstSegment();
             return new_stream;
         }
