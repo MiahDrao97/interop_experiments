@@ -1,18 +1,29 @@
 //! Root of the lib module, which contains the exported functions
 
 /// Static reader that is unique to each thread
-threadlocal var reader: ?*FeedReader = null;
+threadlocal var reader: ?FeedReader = null;
 /// Arena allocator that will get passed to the `reader`
 threadlocal var arena: ?ArenaAllocator = null;
 /// Allocator used in debug mode
 var debug_allocator: DebugAllocator(.{}) = .init;
 /// I exposed this global so that it can set in unit testing to detect memory leaks
-var alloc: Allocator = switch (@import("builtin").mode) {
+var gpa: Allocator = switch (@import("builtin").mode) {
     .ReleaseFast => std.heap.smp_allocator,
     else => debug_allocator.allocator(),
 };
 /// Expose this global so that test cases can fully deinit the arena so we pass tests without memory leaks
 var reset_mode: ResetMode = .{ .retain_with_limit = 4_000_000 };
+/// Threaded io
+var threaded: ?Io.Threaded = null;
+/// Clock
+const clock: Io.Clock = .real;
+
+fn io() Io {
+    if (threaded == null) {
+        threaded = .init(gpa);
+    }
+    return threaded.?.io();
+}
 
 /// Reader result from opening a new reader
 pub const NewReaderResult = enum(u8) {
@@ -36,59 +47,67 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
     }
     // quasi-singleton
     if (arena == null) {
-        arena = .init(alloc);
+        arena = .init(gpa);
     }
 
-    const open_start: i64 = std.time.microTimestamp();
+    const open_start: ?Io.Timestamp = clock.now(io()) catch |err| err: {
+        log.warn("Failed to get start time: {t}", .{err});
+        break :err null;
+    };
+
+    const file_path_z: [:0]const u8 = arena.?.allocator().dupeZ(u8, std.mem.sliceTo(file_path, 0)) catch {
+        log.err("Out of memory.", .{});
+        if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
+        return .outOfMemory;
+    };
 
     var file: File = undefined;
-    if (std.fs.path.isAbsoluteZ(file_path)) {
-        file = std.fs.openFileAbsoluteZ(
-            file_path,
+    if (std.fs.path.isAbsolute(file_path_z)) {
+        file = std.fs.openFileAbsolute(
+            file_path_z,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            log.err("Failed to open file '{s}': {t}", .{ file_path_z, err });
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return .failedToOpen;
         };
     } else {
-        file = std.fs.cwd().openFileZ(
-            file_path,
+        file = std.fs.cwd().openFile(
+            file_path_z,
             File.OpenFlags{ .mode = .read_only },
         ) catch |err| {
-            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
+            log.err("Failed to open file '{s}': {t}", .{ file_path_z, err });
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return .failedToOpen;
         };
     }
 
-    reader = FeedReader.open(&arena.?, file, mem.sliceTo(file_path, 0), false) catch |err| switch (err) {
-        Allocator.Error.OutOfMemory => {
-            log.err("Out of memory. Last allocation: {?f}", .{@errorReturnTrace()});
-            return .outOfMemory;
-        },
-        else => {
-            log.err("Failed to open file '{s}': {s} -> {?f}", .{ file_path, @errorName(err), @errorReturnTrace() });
-            return .failedToOpen;
-        },
-    };
+    reader = .init(&arena.?, file, file_path_z, false);
+    reader.?.start(io());
 
-    const open_end: i64 = std.time.microTimestamp();
-    std.debug.print("Opened file '{s}' in {d}us\n", .{ mem.sliceTo(file_path, 0), open_end - open_start });
+    if (open_start) |start|
+        if (clock.now(io())) |end| {
+            std.debug.print("Opened file '{s}' in {d}us\n", .{
+                mem.sliceTo(file_path, 0),
+                @as(f128, @floatFromInt(end.nanoseconds - start.nanoseconds)) / 1000.0,
+            });
+        } else |_| {};
 
     return .opened;
 }
 
 /// Get the next scan, EOF, or an error if we cannot read it.
 export fn nextScan() ScanResult {
-    if (reader) |current_reader| {
-        return current_reader.nextScan();
+    if (reader) |*current_reader| {
+        return current_reader.nextScan(io());
     }
     return .err(.noActiveReader);
 }
 
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
-    if (reader) |current_reader| {
-        current_reader.deinit(reset_mode);
+    if (reader) |*current_reader| {
+        current_reader.deinit(io(), reset_mode);
         // intentionally hold on to our pre-allocated memory
         reader = null;
     }
@@ -96,15 +115,16 @@ export fn close() void {
 
 /// Expose the last error to managed code
 export fn lastError() ?[*:0]const u8 {
-    if (reader) |current_reader| {
+    if (reader) |*current_reader| {
         return if (current_reader.last_err) |err| err.ptr else null;
     }
     return null;
 }
 
 test "success case" {
+    defer if (threaded) |*t| t.deinit();
     // switch to testing allocator to detect memory leaks
-    alloc = testing.allocator;
+    gpa = testing.allocator;
     // free all so that we don't retain memory at the end of this test
     reset_mode = .free_all;
     // enable debug logs for this test case
@@ -140,6 +160,7 @@ const std = @import("std");
 const testing = std.testing;
 const log = std.log.scoped(.root);
 const mem = std.mem;
+const Io = std.Io;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const DebugAllocator = std.heap.DebugAllocator;

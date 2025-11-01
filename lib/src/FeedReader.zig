@@ -21,45 +21,40 @@ const log = std.log.scoped(.feed_reader);
 /// Key on the JSON object that holds the events array
 const events_key: []const u8 = "events";
 
-/// Open a new `FeedReader`
+/// Initialize a new `FeedReader`
 ///     `arena` - arena allocator
 ///     `file` - contains the file handler that we'll use for the file stream
-///     `file_path` - path to the file we've opened
+///     `file_path` - path to the file we've opened (please copy if this came from FFI boundary)
 ///     `with_file_lock` - indicates that we opened the file with a lock and it needs to be unlocked on close
-pub fn open(
+/// WARN : This simply initiatlizes the structures, but several things are left undefined until `start()` is called.
+pub fn init(
     arena: *ArenaAllocator,
     file: File,
     file_path: [:0]const u8,
     with_file_lock: bool,
-) (Thread.SpawnError || Allocator.Error)!*FeedReader {
-    const allocator: Allocator = arena.allocator();
-    const feed_reader: *FeedReader = try allocator.create(FeedReader);
-    errdefer allocator.destroy(feed_reader);
-
-    const file_path_cpy: [:0]const u8 = try allocator.dupeZ(u8, file_path);
-    errdefer allocator.free(file_path_cpy);
-
-    feed_reader.* = .{
+) FeedReader {
+    return .{
         .arena = arena,
-        .telemetry = .init(file_path_cpy),
-        .file_stream = .init(allocator, file, with_file_lock),
+        .telemetry = .init(file_path),
+        .file_stream = .init(arena.allocator(), file, with_file_lock),
     };
+}
 
-    const read_thread: Thread = try feed_reader.file_stream.startRead();
-    read_thread.detach();
-
-    return feed_reader;
+/// Start the file stream
+pub fn start(self: *FeedReader, io: Io) void {
+    self.file_stream.startRead(io);
 }
 
 /// Get the next scan result
-pub fn nextScan(self: *FeedReader) ScanResult {
+pub fn nextScan(self: *FeedReader, io: Io) ScanResult {
     // the file is supposed to be a massive JSON file; we care about the "events" field, which is an array of objects with depth 1
     if (self.open_events) {
         // parse JSON object: from '{' until '}'
         var buf: [4096]u8 = undefined;
-        const slice: []const u8 = self.parseNextObject(&buf) catch |err| {
+        const slice: []const u8 = self.parseNextObject(io, &buf) catch |err| {
             // don't assign `last_err` here; that happened deeper down
-            log.err("Failed to parse next object: {s} -> {?f}", .{ @errorName(err), @errorReturnTrace() });
+            log.err("Failed to parse next object: {t}", .{err});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return .err(switch (err) {
                 error.OutOfMemory => .outOfMemory,
                 else => .failedToRead,
@@ -80,54 +75,54 @@ pub fn nextScan(self: *FeedReader) ScanResult {
             },
             else => {
                 const src: SourceLocation = @src();
-                self.last_err = fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Failed to parse feeder json object at '{s}', line {d}, pos {d}: {s} -> {?f}\nObject:\n{s}\n", .{
+                self.last_err = fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Failed to parse feeder json object at '{s}', line {d}, pos {d}: {t}\nObject:\n{s}\n", .{
                     src.file,
                     src.line,
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
-                    @errorName(err),
-                    @errorReturnTrace(),
+                    err,
                     slice,
                 }, 0) catch return .err(.outOfMemory);
                 log.err("{s}", .{self.last_err.?});
+                if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
                 return .err(.failedToRead);
             },
         };
         return .ok(parsed);
     } else {
         // we only care about the "events" field
-        self.openEvents() catch |err| switch (err) {
+        self.openEvents(io) catch |err| switch (err) {
             error.EndOfStream => {
-                log.warn("Read until end of stream. The \"events\" field was not found ('{s}', line {d}, pos {d}) -> {?f}", .{
+                log.warn("Read until end of stream. The \"events\" field was not found ('{s}', line {d}, pos {d})", .{
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
-                    @errorReturnTrace(),
                 });
+                if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
                 return .eof;
             },
             error.OutOfMemory => return .err(.outOfMemory),
             else => {
                 // also don't set `last_err`, as that's set deeper in the function
-                log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {s} -> {?f}", .{
+                log.err("Unexpected error while opening array in file '{s}', line {d}, pos {d}: {t}", .{
                     self.telemetry.file_path,
                     self.telemetry.line,
                     self.telemetry.pos,
-                    @errorName(err),
-                    @errorReturnTrace(),
+                    err,
                 });
+                if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
                 return .err(.failedToRead);
             },
         };
         // great, we're in the "events" field and past opening square bracket, so we'll denote that
         self.open_events = true;
-        return self.nextScan();
+        return self.nextScan(io);
     }
 }
 
 /// Parse until the "events" field
-fn openEvents(self: *FeedReader) error{
+fn openEvents(self: *FeedReader, io: Io) error{
     EndOfStream,
     InvalidFileFormat,
     ReadError,
@@ -136,7 +131,7 @@ fn openEvents(self: *FeedReader) error{
     var inside_quotes: bool = false;
     var idx: usize = 0;
     var inside_events: bool = false;
-    while (self.file_stream.nextByte()) |byte| {
+    while (self.file_stream.nextByte(io)) |byte| {
         if (byte == null) {
             // results in EOF result rather than an error
             return error.EndOfStream;
@@ -185,7 +180,7 @@ fn openEvents(self: *FeedReader) error{
         // ok, we've found the "events" field, we're outside the quotes, and we're on the colon character:
         // it has to be the opening of the array next
         if (!inside_quotes and inside_events and byte == ':') {
-            try self.openArray();
+            try self.openArray(io);
             return;
         }
     } else |err| switch (err) {
@@ -195,29 +190,29 @@ fn openEvents(self: *FeedReader) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {t}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
-                @errorName(err),
-                @errorReturnTrace(),
+                err,
             }, 0);
             log.err("{s}", .{self.last_err.?});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return error.ReadError;
         }
     }
 }
 
 /// Parse until the open square bracket ('['). After this, we'll be ready to start parsing objects out of the array.
-fn openArray(self: *FeedReader) error{
+fn openArray(self: *FeedReader, io: Io) error{
     EndOfStream,
     InvalidFileFormat,
     ReadError,
     OutOfMemory,
 }!void {
-    while (self.file_stream.nextByte()) |byte| {
+    while (self.file_stream.nextByte(io)) |byte| {
         if (byte == null) {
             // results in EOF result rather than an error
             return error.EndOfStream;
@@ -259,23 +254,23 @@ fn openArray(self: *FeedReader) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unepxected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unepxected error while parsing '{s}', line {d}, pos {d}: {t}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
-                @errorName(err),
-                @errorReturnTrace(),
+                err,
             }, 0);
             log.err("{s}", .{self.last_err.?});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return error.ReadError;
         }
     }
 }
 
 /// Parse next JSON object in our file stream, outputting the bytes read to `buf`
-fn parseNextObject(self: *FeedReader, buf: []u8) error{
+fn parseNextObject(self: *FeedReader, io: Io, buf: []u8) error{
     InvalidFormat,
     ObjectNotTerminated,
     BufferOverflow,
@@ -286,7 +281,7 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
     var close_brace: bool = false;
     var inside_quotes: bool = false;
     var i: usize = 0;
-    while (self.file_stream.nextByte()) |byte| {
+    while (self.file_stream.nextByte(io)) |byte| {
         if (i >= buf.len) {
             const src: SourceLocation = @src(); // this is the line no. that will show in the log
             self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}|FATAL: Overflowed buffer of {d} bytes at '{s}', line: {d}, pos: {d}. This requires a code change to increase buffer size. Current buf:\n\n{s}\n\n", .{
@@ -365,16 +360,16 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
         },
         else => {
             const src: SourceLocation = @src();
-            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {s} -> {?f}", .{
+            self.last_err = try fmt.allocPrintSentinel(self.arena.allocator(), "{s}: {d}| Unexpected error while parsing '{s}', line {d}, pos {d}: {t}", .{
                 src.file,
                 src.line,
                 self.telemetry.file_path,
                 self.telemetry.line,
                 self.telemetry.pos,
-                @errorName(err),
-                @errorReturnTrace(),
+                err,
             }, 0);
             log.err("{s}", .{self.last_err.?});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             return error.ReadError;
         }
     }
@@ -395,8 +390,8 @@ fn parseNextObject(self: *FeedReader, buf: []u8) error{
 }
 
 /// Free memory or reset the arena to retain some/all capacity
-pub fn deinit(self: *FeedReader, reset_mode: ResetMode) void {
-    self.file_stream.close();
+pub fn deinit(self: *FeedReader, io: Io, reset_mode: ResetMode) void {
+    self.file_stream.close(io);
     _ = self.arena.reset(reset_mode);
 }
 
@@ -630,7 +625,8 @@ fn DualBufferFileStream(comptime buf_size: usize) type {
             const bytes_read: usize = reader.interface.readSliceAll(to_load) catch |err| switch (err) {
                 Io.Reader.Error.EndOfStream => reader.interface.buffered().len,
                 else => {
-                    dual_buf_stream_log.err("Encountered error while reading file: {s} -> {?f}", .{ @errorName(err), @errorReturnTrace() });
+                    dual_buf_stream_log.err("Encountered error while reading file: {t}", .{err});
+                    if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
                     return error.ReadError;
                 },
             };
@@ -794,15 +790,14 @@ const AsyncFileStream = struct {
     file_handle: fd_t,
     /// File opened with lock (needs to be unlocked on close)
     with_lock: bool,
-    /// Whether or not the file has been read (starts as false)
-    /// WARN : Please don't touch this field
-    _file_read: Atomic(bool),
     /// Error encountered while reading
     err: ?anyerror = null,
     /// Position we're at in the file stream
     cursor: usize = 0,
     /// Contents of the file
     contents: []const u8,
+    /// The future for reading the file
+    read_future: Future(void),
     /// Allocator
     allocator: Allocator,
 
@@ -812,37 +807,35 @@ const AsyncFileStream = struct {
     /// Initialize a new `AsyncFileStream` with an allocator, file, and whether or not the file was opened with a lock
     pub fn init(allocator: Allocator, file: File, with_lock: bool) AsyncFileStream {
         return .{
+            .read_future = undefined,
             .file_handle = file.handle,
             .with_lock = with_lock,
-            ._file_read = .init(false),
             .contents = undefined,
             .allocator = allocator,
         };
     }
 
     /// Start reading the file (returns the thread performing the operation)
-    pub fn startRead(self: *AsyncFileStream) Thread.SpawnError!Thread {
-        return try Thread.spawn(.{}, read, .{self});
+    pub fn startRead(self: *AsyncFileStream, io: Io) void {
+        self.read_future = io.async(read, .{ self, io });
     }
 
-    fn read(self: *AsyncFileStream) void {
-        defer {
-            self._file_read.store(true, .release);
-            async_fs_log.info("Finished reading file", .{});
-        }
+    fn read(self: *AsyncFileStream, io: Io) void {
+        defer async_fs_log.info("Finished reading file", .{});
 
         const file: File = .{ .handle = self.file_handle };
-        var reader: File.Reader = file.reader(&buffer.sink);
+        var reader: File.Reader = file.reader(io, &buffer.sink);
         self.contents = reader.interface.allocRemaining(self.allocator, .unlimited) catch |e| err_blk: {
-            async_fs_log.err("Encountered failure while reading file: {s} -> {?f}", .{ @errorName(e), @errorReturnTrace() });
+            async_fs_log.err("Encountered failure while reading file: {t}", .{e});
+            if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             self.err = e;
             break :err_blk &.{};
         };
     }
 
     /// Get the next byte (has to wait while the file is being read)
-    pub fn nextByte(self: *AsyncFileStream) !?u8 {
-        while (!self._file_read.load(.monotonic)) {}
+    pub fn nextByte(self: *AsyncFileStream, io: Io) !?u8 {
+        self.read_future.await(io);
         if (self.err) |e| {
             return e;
         }
@@ -856,8 +849,8 @@ const AsyncFileStream = struct {
     }
 
     /// Close the file and free claimed memory
-    pub fn close(self: *const AsyncFileStream) void {
-        while (!self._file_read.load(.monotonic)) {}
+    pub fn close(self: *AsyncFileStream, io: Io) void {
+        self.read_future.cancel(io);
         const file: File = .{ .handle = self.file_handle };
         if (self.with_lock) {
             file.unlock();
@@ -866,8 +859,8 @@ const AsyncFileStream = struct {
     }
 
     /// Free the contents
-    pub fn deinit(self: *AsyncFileStream) void {
-        while (!self._file_read.load(.monotonic)) {}
+    pub fn deinit(self: *AsyncFileStream, io: Io) void {
+        self.read_future.cancel(io);
         self.allocator.free(self.contents);
         self.* = undefined;
     }
@@ -935,7 +928,6 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const ResetMode = ArenaAllocator.ResetMode;
 const File = std.fs.File;
-const AnyReader = std.io.AnyReader;
 const Parsed = json.Parsed;
 const ParseOptions = json.ParseOptions;
 const json = std.json;
@@ -944,6 +936,7 @@ const windows = std.os.windows;
 const posix = std.posix;
 const fmt = std.fmt;
 const Io = std.Io;
+const Future = Io.Future;
 const fd_t = posix.fd_t;
 const Thread = std.Thread;
 const SpawnConfig = Thread.SpawnConfig;
