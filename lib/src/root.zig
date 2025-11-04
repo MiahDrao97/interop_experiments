@@ -1,7 +1,7 @@
 //! Root of the lib module, which contains the exported functions
 
 /// Static reader that is unique to each thread
-threadlocal var reader: ?FeedReader = null;
+threadlocal var reader: ?*FeedReader = null;
 /// Arena allocator that will get passed to the `reader`
 threadlocal var arena: ?ArenaAllocator = null;
 /// Allocator used in debug mode
@@ -21,6 +21,7 @@ const clock: Io.Clock = .real;
 fn io() Io {
     if (threaded == null) {
         threaded = .init(gpa);
+        threaded.?.cpu_count = 1;
     }
     return threaded.?.io();
 }
@@ -82,7 +83,8 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
         };
     }
 
-    reader = .init(&arena.?, file, file_path_z, false);
+    reader = arena.?.allocator().create(FeedReader) catch return .outOfMemory;
+    reader.?.* = .init(&arena.?, file, file_path_z, false);
     reader.?.start(io());
 
     if (open_start) |start|
@@ -98,7 +100,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
 
 /// Get the next scan, EOF, or an error if we cannot read it.
 export fn nextScan() ScanResult {
-    if (reader) |*current_reader| {
+    if (reader) |current_reader| {
         return current_reader.nextScan(io());
     }
     return .err(.noActiveReader);
@@ -106,7 +108,7 @@ export fn nextScan() ScanResult {
 
 /// Close the current reader, allocated memory, and underlying feed file
 export fn close() void {
-    if (reader) |*current_reader| {
+    if (reader) |current_reader| {
         current_reader.deinit(io(), reset_mode);
         // intentionally hold on to our pre-allocated memory
         reader = null;
@@ -115,7 +117,7 @@ export fn close() void {
 
 /// Expose the last error to managed code
 export fn lastError() ?[*:0]const u8 {
-    if (reader) |*current_reader| {
+    if (reader) |current_reader| {
         return if (current_reader.last_err) |err| err.ptr else null;
     }
     return null;

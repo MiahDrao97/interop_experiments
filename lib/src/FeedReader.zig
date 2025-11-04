@@ -817,7 +817,7 @@ const AsyncFileStream = struct {
 
     /// Start reading the file (returns the thread performing the operation)
     pub fn startRead(self: *AsyncFileStream, io: Io) void {
-        self.read_future = io.async(read, .{ self, io });
+        self.read_future = io.concurrent(read, .{ self, io }) catch @panic("Concurrency required");
     }
 
     fn read(self: *AsyncFileStream, io: Io) void {
