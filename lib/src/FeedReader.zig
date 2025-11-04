@@ -36,13 +36,13 @@ pub fn init(
     return .{
         .arena = arena,
         .telemetry = .init(file_path),
-        .file_stream = .init(arena.allocator(), file, with_file_lock),
+        .file_stream = .init(file, with_file_lock),
     };
 }
 
 /// Start the file stream
-pub fn start(self: *FeedReader, io: Io) void {
-    self.file_stream.startRead(io);
+pub fn start(self: *FeedReader, io: Io, gpa: Allocator) void {
+    self.file_stream.startRead(io, gpa);
 }
 
 /// Get the next scan result
@@ -411,78 +411,6 @@ const Telemetry = struct {
 };
 
 /// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
-/// This prevents having to call the OS's read file function more than a few times.
-fn FileStream(comptime buf_size: usize) type {
-    return struct {
-        /// Owned by the OS; underlying type varies on each platform
-        file_handle: fd_t,
-        /// If true, we'll need to unlock the file when we close the stream
-        file_locked: bool,
-        /// Buffer
-        buf: [buf_size]u8 = [_]u8{0} ** buf_size,
-        /// Slice of the buffer we're currently reading
-        read_buffer: []u8 = undefined,
-        /// Cursor on the `read_buffer`.
-        /// Starts at null to indicate we need to read in the first chunk.
-        cursor: ?usize = null,
-        /// If true, we've encountered the end of the file.
-        /// Once the `cursor` reaches the length of the `read_buffer`, we've streamed the whole file.
-        eof: bool = false,
-
-        /// Initialize with a `file` and `with_file_lock` to indicate that we're reading with a lock
-        pub fn init(file: File, with_file_lock: bool) @This() {
-            return .{
-                .file_handle = file.handle,
-                .file_locked = with_file_lock,
-            };
-        }
-
-        /// Stream the next byte or `null` if EOF
-        pub fn nextByte(self: *@This()) !?u8 {
-            if (self.cursor == null or self.cursor.? == self.read_buffer.len) {
-                if (self.eof) {
-                    return null;
-                }
-                try self.nextSegment();
-            }
-            defer self.cursor.? += 1;
-            return self.read_buffer[self.cursor.?];
-        }
-
-        /// Loads the next chunk of the file into the buffer that matches `load_buf`
-        fn nextSegment(self: *@This()) !void {
-            if (self.eof) {
-                return;
-            }
-
-            const file: File = .{ .handle = self.file_handle };
-            var reader: File.Reader = file.reader(&buffer.sink);
-
-            if (reader.interface.readSliceAll(&self.buf)) {
-                self.read_buffer = &self.buf;
-            } else |err| switch (err) {
-                Io.Reader.Error.EndOfStream => {
-                    self.eof = true;
-                    self.read_buffer = reader.interface.buffered();
-                },
-                else => |e| return e,
-            }
-            self.cursor = 0;
-        }
-
-        /// Close the file and unlock it if `file_locked`
-        pub fn close(self: *@This()) void {
-            const file: File = .{ .handle = self.file_handle };
-            if (self.file_locked) {
-                file.unlock();
-            }
-            file.close();
-            self.* = undefined;
-        }
-    };
-}
-
-/// Data stream that loads parts of the file's contents in chunks that are `buf_size` bytes long.
 /// Really, there are two buffers. While the one is being read, the other is populated on another thread.
 /// Switches between the two to prevent having to wait on the syscall to read from the file.
 /// This prevents having to call the OS's read file function more than a few times.
@@ -798,34 +726,31 @@ const AsyncFileStream = struct {
     contents: []const u8,
     /// The future for reading the file
     read_future: Future(void),
-    /// Allocator
-    allocator: Allocator,
 
     /// Logger scoped to this struct
     const async_fs_log = std.log.scoped(.async_file_stream);
 
     /// Initialize a new `AsyncFileStream` with an allocator, file, and whether or not the file was opened with a lock
-    pub fn init(allocator: Allocator, file: File, with_lock: bool) AsyncFileStream {
+    pub fn init(file: File, with_lock: bool) AsyncFileStream {
         return .{
             .read_future = undefined,
             .file_handle = file.handle,
             .with_lock = with_lock,
             .contents = undefined,
-            .allocator = allocator,
         };
     }
 
-    /// Start reading the file (returns the thread performing the operation)
-    pub fn startRead(self: *AsyncFileStream, io: Io) void {
-        self.read_future = io.concurrent(read, .{ self, io }) catch @panic("Concurrency required");
+    /// Start reading the file asynchronously
+    pub fn startRead(self: *AsyncFileStream, io: Io, gpa: Allocator) void {
+        self.read_future = io.concurrent(read, .{ self, io, gpa }) catch @panic("Concurrency required");
     }
 
-    fn read(self: *AsyncFileStream, io: Io) void {
+    fn read(self: *AsyncFileStream, io: Io, gpa: Allocator) void {
         defer async_fs_log.info("Finished reading file", .{});
 
         const file: File = .{ .handle = self.file_handle };
         var reader: File.Reader = file.reader(io, &buffer.sink);
-        self.contents = reader.interface.allocRemaining(self.allocator, .unlimited) catch |e| err_blk: {
+        self.contents = reader.interface.allocRemaining(gpa, .unlimited) catch |e| err_blk: {
             async_fs_log.err("Encountered failure while reading file: {t}", .{e});
             if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace);
             self.err = e;
@@ -859,9 +784,9 @@ const AsyncFileStream = struct {
     }
 
     /// Free the contents
-    pub fn deinit(self: *AsyncFileStream, io: Io) void {
+    pub fn deinit(self: *AsyncFileStream, io: Io, gpa: Allocator) void {
         self.read_future.cancel(io);
-        self.allocator.free(self.contents);
+        gpa.free(self.contents);
         self.* = undefined;
     }
 };

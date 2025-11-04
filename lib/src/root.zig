@@ -19,6 +19,9 @@ var threaded: ?Io.Threaded = null;
 const clock: Io.Clock = .real;
 
 fn io() Io {
+    if (@import("builtin").is_test) {
+        return testing.io;
+    }
     if (threaded == null) {
         threaded = .init(gpa);
         threaded.?.cpu_count = 1;
@@ -85,7 +88,7 @@ export fn open(file_path: [*:0]const u8) NewReaderResult {
 
     reader = arena.?.allocator().create(FeedReader) catch return .outOfMemory;
     reader.?.* = .init(&arena.?, file, file_path_z, false);
-    reader.?.start(io());
+    reader.?.start(io(), arena.?.allocator());
 
     if (open_start) |start|
         if (clock.now(io())) |end| {
@@ -124,7 +127,6 @@ export fn lastError() ?[*:0]const u8 {
 }
 
 test "success case" {
-    defer if (threaded) |*t| t.deinit();
     // switch to testing allocator to detect memory leaks
     gpa = testing.allocator;
     // free all so that we don't retain memory at the end of this test
